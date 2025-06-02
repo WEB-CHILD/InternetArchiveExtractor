@@ -1,7 +1,7 @@
 # Python WARC App
 
 This project is designed to read a CSV file containing URLs, remove any instances of port 80 from those URLs, and generate WARC-GZ files based on the cleaned data.
-The CSV file can be constructed by using the following tool: (Python Wayback Machine Downloader)[https://github.com/bitdruid/python-wayback-machine-downloader]
+The CSV file can be constructed by using the following tool: [Python Wayback Machine Downloader](https://github.com/bitdruid/python-wayback-machine-downloader)
 
 ## Project Structure
 
