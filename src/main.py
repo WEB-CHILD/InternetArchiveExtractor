@@ -5,6 +5,7 @@ from warcio.warcwriter import WARCWriter
 from warcio.recordloader import ArcWarcRecord
 from warcio.statusandheaders import StatusAndHeaders
 import io
+import sys
 import gzip
 import csv
 from datetime import datetime
@@ -23,7 +24,7 @@ def process_csv(file_path):
 def create_warc_gz(data, output_dir):
     count = 0
     os.makedirs(output_dir, exist_ok=True)
-    warc_path = os.path.join(output_dir, 'output.warc.gz')
+    warc_path = os.path.join(output_dir, 'output2.warc.gz')
     with open(warc_path, 'wb') as stream:
         writer = WARCWriter(stream, gzip=True)
         for row in data:
@@ -63,7 +64,10 @@ def read_csv(input_csv):
         return list(reader)
 
 def main():
-    csv_file_path = r'C:\\Users\\vhole\\Documents\\new\\waybackup_snapshots\\waybackup_kidlink.dk.csv'  # Update with your CSV file path
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <csv_file_path>")
+        sys.exit(1)
+    csv_file_path = sys.argv[1]
     output_dir = 'output'  # Update with your desired output directory
     data = read_csv(csv_file_path)
     create_warc_gz(data, output_dir)
