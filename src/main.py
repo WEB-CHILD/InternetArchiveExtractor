@@ -4,9 +4,7 @@ from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 from warcio.recordloader import ArcWarcRecord
 from warcio.statusandheaders import StatusAndHeaders
-import io
 import sys
-import gzip
 import csv
 from datetime import datetime
 
@@ -48,6 +46,30 @@ def write_500_warc_entry(writer, url, warc_date):
     writer.write_record(record)
 
 def create_warc_gz(data, output_dir, output_filename):
+    """
+    Creates a compressed WARC (Web ARChive) file (.warc.gz) from a list of data entries.
+    Each entry in `data` should be a dictionary containing at least the following keys:
+        - 'url_origin': The original URL of the resource.
+        - 'file': The local file path to the resource content.
+        - 'timestamp': The timestamp of the capture in 'YYYYMMDDHHMMSS' format.
+        - 'response': The HTTP response code as a string or integer (e.g., '200', '404', '500').
+    The function processes each entry and writes a corresponding WARC record:
+        - For HTTP 404 and 500 responses, special WARC records are created using helper functions.
+        - For successful responses (HTTP 200), the content is read from the specified file and written as a WARC response record.
+        - The content type is inferred from the file extension.
+        - If the file does not exist, the entry is skipped and a warning is printed.
+    Parameters:
+        data (list of dict): List of dictionaries containing resource metadata and file paths.
+        output_dir (str): Directory where the output WARC file will be saved.
+        output_filename (str): Base name for the output WARC file (without extension).
+    Side Effects:
+        - Creates the output directory if it does not exist.
+        - Writes a compressed WARC file to disk.
+        - Prints progress and summary information to stdout.
+    Returns:
+        None
+    """
+
     total_counter = 0
     success_counter = 0
     internal_service_error_counter = 0
