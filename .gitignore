@@ -68,3 +68,5 @@ dmypy.json
 
 # Exclude waybackup_snapshots directory
 waybackup_snapshots/
+waybackup_snapshots_old/
+output/
