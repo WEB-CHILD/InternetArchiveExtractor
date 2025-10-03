@@ -9,6 +9,9 @@ from warcio.statusandheaders import StatusAndHeaders
 import csv
 from datetime import datetime
 
+
+COMBINED_CSV_PATH = "combined_output.csv"
+
 def remove_port_80(url):
     if ":80" in url:
         return url.replace(":80", "")
@@ -167,6 +170,10 @@ def process_csv_file(csv_file_path, output_dir, output_filename):
     create_warc_gz(data, output_dir, output_filename)
 
 def combine_csv_files(input_directory, output_file):
+    """
+    Combines all CSV files in the specified directory into a single CSV file.
+    This is used to aggregate the multiple CSV files constructed when downloading content from the Internet Archive into one for further processing into WARC files.
+    """
     # Find all CSV files in the directory
     csv_files = glob.glob(os.path.join(input_directory, "*.csv"))
     # Read and concatenate all CSV files
@@ -177,8 +184,6 @@ def combine_csv_files(input_directory, output_file):
     print(f"Combined {len(csv_files)} files into {output_file}")
           
 
-
-
 def main():
     """
     Main entry point for the script. Expects two command-line arguments: the path to a directory with multiple CSV files and the desired filename for the output warc.gx file.
@@ -187,8 +192,7 @@ def main():
     Usage:
         python main.py <csv_file_path> <output_filename>
     """
-    
-    combined_csv_path = "combined_output.csv"
+
     if len(sys.argv) < 3:
         print("Usage: python main.py <csv_file_path> <output_filename>")
         sys.exit(1)
@@ -196,8 +200,8 @@ def main():
     csv_file_path = sys.argv[1]
     output_filename = sys.argv[2]
     
-    combine_csv_files(csv_file_path, combined_csv_path)
-    process_csv_file(combined_csv_path, 'output', output_filename)
+    combine_csv_files(csv_file_path, COMBINED_CSV_PATH)
+    process_csv_file(COMBINED_CSV_PATH, 'output', output_filename)
 
 
 
