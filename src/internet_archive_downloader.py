@@ -30,7 +30,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
 def download_urls_from_csv(csv_file_path: str, url_column_name: str):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
-    retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a single day interval.
+    retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
 
     Args:
         csv_file_path (str): The file path to the CSV file containing the Internet Archive URLs.
@@ -49,13 +49,13 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str):
         wayback_date, archived_url = get_wayback_date_and_archived_url(url)
 
         end_date = WaybackDateObject(wayback_date.wayback_format())
-        end_date.increment_day()
+        end_date.increment_week()
 
+        start_date = WaybackDateObject(wayback_date.wayback_format())
+        start_date.decrement_week()
 
         try:
-
-            download_single_url(archived_url, wayback_date.wayback_format(), end_date.wayback_format())
-
+            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
         except TypeError as e:
             print()
         
