@@ -48,8 +48,6 @@ def choose_mode():
         print(f"Invalid mode: {args.mode}. Choose from 'download', 'convert' or 'full'.")
         sys.exit(1)
 
-# TODO: Bind both parts of the program together in this main class, which should support argparse for input and output files and making it possible to 
-# run both parts of the program in one go or seperate as needed..
 def main():
     choose_mode()
 
