@@ -88,7 +88,7 @@ def download_single_url(url: str, start_date: str, end_date: str):
     debug=True,
     log=True,
     keep=True,
-    workers=1,
+    workers=5,
     reset=False,
     explicit=True
     )
