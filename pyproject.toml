@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "internet-archive-extractor"           
+version = "0.0.2"
+description = "Tool for extracting archived web sites from the Internet Archive saving as WARC files."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Victor Harbo Johnston", email = "vijo@cas.au.dk" }]
+requires-python = ">=3.8"
+dependencies = [
+    "certifi",
+    "charset-normalizer",
+    "idna",
+    "numpy",
+    "pandas",
+    "pysqlite3",
+    "python-dateutil",
+    "python-magic",
+    "pytz",
+    "pywaybackup",
+    "requests",
+    "six",
+    "tqdm",
+    "tzdata",
+    "urllib3",
+    "warcio"
+]
+
+
+[project.scripts]
+internet-archive-extractor = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/WEB-CHILD/InternetArchiveExtractor"
