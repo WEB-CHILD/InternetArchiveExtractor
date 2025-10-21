@@ -90,7 +90,7 @@ def download_single_url(url: str, start_date: str, end_date: str):
     keep=True,
     workers=5,
     reset=False,
-    explicit=True
+    explicit=False
     )
 
     backup.run()
