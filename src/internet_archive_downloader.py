@@ -1,5 +1,6 @@
 from pywaybackup import PyWayBackup
 from wayback_date_object import WaybackDateObject
+from main import Period, DOWNLOAD_PERIOD
 import re
 
 from utils import import_urls_from_csv
@@ -48,11 +49,19 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str):
     for url in internet_archive_urls:
         wayback_date, archived_url = get_wayback_date_and_archived_url(url)
 
-        end_date = WaybackDateObject(wayback_date.wayback_format())
-        end_date.increment_week()
+        if DOWNLOAD_PERIOD == Period.DAY:
+            start_date = WaybackDateObject(wayback_date.wayback_format())
+            start_date.decrement_day()
 
-        start_date = WaybackDateObject(wayback_date.wayback_format())
-        start_date.decrement_week()
+            end_date = WaybackDateObject(wayback_date.wayback_format())
+            end_date.increment_day()
+            
+        elif DOWNLOAD_PERIOD == Period.WEEK:
+            start_date = WaybackDateObject(wayback_date.wayback_format())
+            start_date.decrement_week()
+
+            end_date = WaybackDateObject(wayback_date.wayback_format())
+            end_date.increment_week()
 
         try:
             download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())

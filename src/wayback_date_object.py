@@ -34,28 +34,19 @@ class WaybackDateObject:
         return f"{self.year}{self.month}{self.day}{self.hour}{self.minute}{self.second}"
     
     def increment_day(self):
+        """Use datetime arithmetic to add one day so month lengths and
+        leap years are handled correctly."""
+        dt = self.to_datetime() + timedelta(days=1)
+        self.from_datetime(dt)
+
+    def decrement_day(self):
         """
-        Increments the day by one, adjusting month and year as necessary.
-        Note: This method does not account for leap years or varying month lengths.
+        Decrements the date by one day, adjusting month and year as necessary.
+        This method uses Python's datetime arithmetic so it correctly handles
+        varying month lengths and leap years.
         """
-        day = int(self.day)
-        month = int(self.month)
-        year = int(self.year)
-
-        # Days in each month (not accounting for leap years)
-        days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-
-        day += 1
-        if day > days_in_month[month - 1]:
-            day = 1
-            month += 1
-            if month > 12:
-                month = 1
-                year += 1
-
-        self.day = f"{day:02d}"
-        self.month = f"{month:02d}"
-        self.year = str(year)
+        dt = self.to_datetime() - timedelta(days=1)
+        self.from_datetime(dt)
 
     def to_datetime(self):
         """Converts the WaybackDateObject to a Python datetime object."""
