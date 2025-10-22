@@ -3,7 +3,7 @@ import argparse
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
 from internet_archive_downloader import download_urls_from_csv
-from constants import Period, DOWNLOAD_PERIOD
+from constants import Period, DOWNLOAD_PERIOD, DOWNLOAD_RESET
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
@@ -12,6 +12,8 @@ parser.add_argument("input", help="The input file or directory path.")
 parser.add_argument("--output", help="The output file name for the generated WARC file. Only applicable for modes: 'convert' or 'full'.")
 parser.add_argument("--column_name", default="Internet_Archive_URL", help="The column name in the CSV file that contains the URLs for download. Default is 'Internet_Archive_URL'.")
 parser.add_argument("--period", default="DAY", help="The period around the archived date to download. Options are: 'DAY' and 'WEEK'. Default is 'DAY'.")
+parser.add_argument("--reset", action="store_true", help="If set, resets the download process completely.")
+
 
 class Mode(Enum):
     """
@@ -44,8 +46,9 @@ except ValueError:
         sys.exit(1)
 
 def choose_mode():
-    global DOWNLOAD_PERIOD 
+    global DOWNLOAD_PERIOD, DOWNLOAD_RESET
     DOWNLOAD_PERIOD = Period(args.period.upper())
+    DOWNLOAD_RESET = args.reset
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
         print("Download mode selected.")

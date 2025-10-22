@@ -9,3 +9,6 @@ class Period(Enum):
 
 # Default download period
 DOWNLOAD_PERIOD = Period.DAY
+
+# Download reset 
+DOWNLOAD_RESET = False
