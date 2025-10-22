@@ -1,6 +1,6 @@
 from pywaybackup import PyWayBackup
 from wayback_date_object import WaybackDateObject
-from constants import Period, DOWNLOAD_PERIOD
+from constants import Period, DOWNLOAD_PERIOD, DOWNLOAD_RESET
 import re
 
 from utils import import_urls_from_csv
@@ -98,7 +98,7 @@ def download_single_url(url: str, start_date: str, end_date: str):
     log=True,
     keep=True,
     workers=5,
-    reset=False,
+    reset=DOWNLOAD_RESET,
     explicit=False
     )
 
