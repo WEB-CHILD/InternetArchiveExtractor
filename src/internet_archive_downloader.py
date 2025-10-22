@@ -1,6 +1,6 @@
 from pywaybackup import PyWayBackup
 from wayback_date_object import WaybackDateObject
-from main import Period, DOWNLOAD_PERIOD
+from constants import Period, DOWNLOAD_PERIOD
 import re
 
 from utils import import_urls_from_csv
@@ -55,7 +55,7 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str):
 
             end_date = WaybackDateObject(wayback_date.wayback_format())
             end_date.increment_day()
-            
+
         elif DOWNLOAD_PERIOD == Period.WEEK:
             start_date = WaybackDateObject(wayback_date.wayback_format())
             start_date.decrement_week()

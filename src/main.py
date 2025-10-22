@@ -3,6 +3,7 @@ import argparse
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
 from internet_archive_downloader import download_urls_from_csv
+from constants import Period, DOWNLOAD_PERIOD
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
@@ -20,15 +21,7 @@ class Mode(Enum):
     DOWNLOAD = 2
     CONVERT = 3
 
-class Period(Enum):
-    """
-    Enum for the different periods around the archived date to download.
-    """
-    DAY = "DAY"
-    WEEK = "WEEK"
-
-# Set default download period as a global variable
-DOWNLOAD_PERIOD = Period.DAY
+# Set default download period as a global variable (imported from constants)
 
 args = parser.parse_args()
 
