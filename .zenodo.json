@@ -1,0 +1,37 @@
+{
+  "title": "InternetArchiveExtractor",
+  "description": "Tool for extracting archived web sites from the Internet Archive saving as WARC files. This tool downloads snapshots from the Wayback Machine, combines and cleans CSV metadata, and converts the collected data into compressed WARC archives.",
+  "creators": [
+    {
+      "name": "Johnston, Victor Harbo",
+      "affiliation": "Aarhus University",
+      "orcid": "https://orcid.org/0000-0003-0087-1220"
+    },
+    {
+        "name": "Thøgersen, Jørn",
+        "affiliation": "Aarhus University",
+        "orcid": "https://orcid.org/0009-0000-8837-1057"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "internet-archive",
+    "wayback-machine",
+    "web-archiving",
+    "warc",
+    "python",
+    "data-extraction",
+    "web-scraping"
+  ],
+  "upload_type": "software",
+  "access_right": "open",
+  "related_identifiers": [
+    {
+      "relation": "isSupplementTo",
+      "identifier": "https://github.com/WEB-CHILD/InternetArchiveExtractor",
+      "scheme": "url"
+    }
+  ],
+  "language": "eng",
+  "version": "0.0.8"
+}
