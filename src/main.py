@@ -3,7 +3,7 @@ import argparse
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
 from internet_archive_downloader import download_urls_from_csv
-from constants import Period, DOWNLOAD_PERIOD, DOWNLOAD_RESET
+from constants import Period
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
@@ -23,8 +23,6 @@ class Mode(Enum):
     FULL = 1
     DOWNLOAD = 2
     CONVERT = 3
-
-# Set default download period as a global variable (imported from constants)
 
 args = parser.parse_args()
 
@@ -47,11 +45,10 @@ except ValueError:
         sys.exit(1)
 
 def choose_mode():
-    global DOWNLOAD_PERIOD, DOWNLOAD_RESET
-    DOWNLOAD_PERIOD = Period(args.period.upper())
-    DOWNLOAD_RESET = args.reset
+    download_period = Period(args.period.upper())
+    download_reset = args.reset
 
-    if DOWNLOAD_PERIOD == Period.CUSTOM:
+    if download_period == Period.CUSTOM:
         print("CUSTOM period selected.")
         if not args.start_time or not args.end_time:
             print("For CUSTOM period, both --start_time and --end_time must be provided.")
@@ -62,7 +59,7 @@ def choose_mode():
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
         print("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset)
     elif args.mode.upper() == Mode.CONVERT.name:
         print("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
@@ -70,7 +67,7 @@ def choose_mode():
     elif args.mode.upper() == Mode.FULL.name:
         print("Full mode selected.")
 
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset)
         combine_csv_files("waybackup_snapshots", COMBINED_CSV_PATH)
         process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     else:

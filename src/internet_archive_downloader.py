@@ -1,7 +1,8 @@
 from pywaybackup import PyWayBackup
 from wayback_date_object import WaybackDateObject
-from constants import Period, DOWNLOAD_PERIOD, DOWNLOAD_RESET
+from constants import Period
 import re
+from sqlalchemy.exc import OperationalError
 
 from utils import import_urls_from_csv
 
@@ -28,7 +29,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         archived_url = match.group(2)
         return date, archived_url
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -36,6 +37,10 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
     Args:
         csv_file_path (str): The file path to the CSV file containing the Internet Archive URLs.
         url_column_name (str): The name of the column in the CSV file that contains the URLs.
+        start_time (str, optional): The start time for CUSTOM period.
+        end_time (str, optional): The end time for CUSTOM period.
+        download_period (Period, optional): The period to download. Defaults to Period.DAY.
+        download_reset (bool, optional): Whether to reset downloads. Defaults to False.
 
     Returns:
         None
@@ -44,41 +49,53 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
         - Downloads archived content for each URL from the Wayback Machine.
         - Handles and prints TypeError exceptions that may occur during download.
     """
+    if download_period is None:
+        download_period = Period.DAY
+    
     internet_archive_urls = import_urls_from_csv(csv_file_path, url_column_name)
 
     for url in internet_archive_urls:
         wayback_date, archived_url = get_wayback_date_and_archived_url(url)
 
 
-        match DOWNLOAD_PERIOD:
+        match download_period:
             case Period.DAY:
+                print("DAY period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_day()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_day()
             case Period.WEEK:
+                print("WEEK period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_week()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_week()
             case Period.FULL:
+                print("FULL period selected and applied to download.")
                 start_date = WaybackDateObject("19950101000000")
                 end_date = WaybackDateObject("20051231235959")
             case Period.CUSTOM:
+                print("CUSTOM period selected and applied to download.")
                 start_date = WaybackDateObject(start_time)
                 end_date = WaybackDateObject(end_time)
             case _:
-                raise ValueError(f"Unsupported download period: {DOWNLOAD_PERIOD}")
+                raise ValueError(f"Unsupported download period: {download_period}")
 
         try:
-            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
+            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset)
+        except OperationalError as e:
+            if "index" in str(e) and "already exists" in str(e):
+                print(f"Warning: Database index already exists, continuing... ({e})")
+            else:
+                raise
         except TypeError as e:
-            print()
+            print(f"TypeError occurred: {e}")
         
     
-def download_single_url(url: str, start_date: str, end_date: str):
+def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False):
     """
     Downloads all available snapshots of a given URL from the Internet Archive's Wayback Machine within a specified date range.
 
@@ -86,6 +103,7 @@ def download_single_url(url: str, start_date: str, end_date: str):
         url (str): The URL to download snapshots for.
         start_date (str): The start date (inclusive) in 'YYYYMMDD' format.
         end_date (str): The end date (inclusive) in 'YYYYMMDD' format.
+        download_reset (bool, optional): Whether to reset downloads. Defaults to False.
 
     Returns:
         None
@@ -97,6 +115,10 @@ def download_single_url(url: str, start_date: str, end_date: str):
     """
 
     print(f"Downloading {url} from {start_date} to {end_date}")
+
+    if download_reset:
+        print("Download reset is enabled.")
+
     backup = PyWayBackup(
     url=url,
     all=True,
@@ -107,7 +129,7 @@ def download_single_url(url: str, start_date: str, end_date: str):
     log=True,
     keep=True,
     workers=5,
-    reset=DOWNLOAD_RESET,
+    reset=download_reset,
     explicit=False
     )
 
