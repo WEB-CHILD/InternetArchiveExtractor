@@ -13,7 +13,8 @@ parser.add_argument("--output", help="The output file name for the generated WAR
 parser.add_argument("--column_name", default="Internet_Archive_URL", help="The column name in the CSV file that contains the URLs for download. Default is 'Internet_Archive_URL'.")
 parser.add_argument("--period", default="DAY", help="The period around the archived date to download. Options are: 'DAY', 'WEEK' and 'FULL'. Default is 'DAY'.")
 parser.add_argument("--reset", action="store_true", help="If set, resets the download process completely.")
-
+parser.add_argument("--start_time", help="The start time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
+parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 
 class Mode(Enum):
     """
@@ -50,9 +51,18 @@ def choose_mode():
     DOWNLOAD_PERIOD = Period(args.period.upper())
     DOWNLOAD_RESET = args.reset
 
+    if DOWNLOAD_PERIOD == Period.CUSTOM:
+        print("CUSTOM period selected.")
+        if not args.start_time or not args.end_time:
+            print("For CUSTOM period, both --start_time and --end_time must be provided.")
+            sys.exit(1)
+        
+
+
+
     if args.mode.upper() == Mode.DOWNLOAD.name:
         print("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time)
     elif args.mode.upper() == Mode.CONVERT.name:
         print("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
@@ -60,7 +70,7 @@ def choose_mode():
     elif args.mode.upper() == Mode.FULL.name:
         print("Full mode selected.")
 
-        download_urls_from_csv(args.input, args.column_name)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time)
         combine_csv_files("waybackup_snapshots", COMBINED_CSV_PATH)
         process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     else:

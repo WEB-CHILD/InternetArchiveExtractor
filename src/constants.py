@@ -6,6 +6,7 @@ class Period(Enum):
     DAY = "DAY"
     WEEK = "WEEK"
     FULL = "FULL"
+    CUSTOM = "CUSTOM"
 
 
 # Default download period

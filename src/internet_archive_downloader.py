@@ -28,7 +28,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         archived_url = match.group(2)
         return date, archived_url
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -66,6 +66,9 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str):
             case Period.FULL:
                 start_date = WaybackDateObject("19950101000000")
                 end_date = WaybackDateObject("20051231235959")
+            case Period.CUSTOM:
+                start_date = WaybackDateObject(start_time)
+                end_date = WaybackDateObject(end_time)
             case _:
                 raise ValueError(f"Unsupported download period: {DOWNLOAD_PERIOD}")
 
