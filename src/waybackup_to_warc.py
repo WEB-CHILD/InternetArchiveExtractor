@@ -2,9 +2,7 @@ import glob
 import os
 import sys
 import pandas as pd
-from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
-from warcio.recordloader import ArcWarcRecord
 from warcio.statusandheaders import StatusAndHeaders
 import csv
 from datetime import datetime
@@ -70,7 +68,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
         data (list of dict): List of dictionaries containing resource metadata and file paths.
         output_dir (str): Directory where the output WARC file will be saved.
         output_filename (str): Base name for the output WARC files (without extension).
-        max_size_bytes (int): Maximum size in bytes for each WARC file (default: 1GB = 1073741824 bytes).
+        max_size_bytes (int): Maximum size in bytes for each WARC file (default: 1GB = 1.073.741.824 bytes).
     
     Side Effects:
         - Creates the output directory if it does not exist.
@@ -93,7 +91,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
     os.makedirs(output_dir, exist_ok=True)
     
     # Create the first WARC file
-    warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:03d}.warc.gz")
+    warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:04d}.warc.gz")
     print(f"Creating WARC file: {warc_path}")
     stream = open(warc_path, 'wb')
     writer = WARCWriter(stream, gzip=True)
@@ -123,7 +121,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
             # Create new WARC file
             warc_file_number += 1
             current_size = 0
-            warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:03d}.warc.gz")
+            warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:04d}.warc.gz")
             print(f"Creating WARC file: {warc_path}")
             stream = open(warc_path, 'wb')
             writer = WARCWriter(stream, gzip=True)
