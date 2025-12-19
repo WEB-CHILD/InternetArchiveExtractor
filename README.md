@@ -1,5 +1,7 @@
 # InternetArchiveExtractor
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17987609.svg)](https://doi.org/10.5281/zenodo.17987609)
+
 This repository extracts archived content from the Wayback Machine and converts collected metadata and downloaded snapshot files into compressed WARC files. The project currently supports three primary modes of operation: downloading snapshots from the Internet Archive, combining/cleaning CSV metadata produced by Wayback backup tools, and converting that metadata + downloaded files into a WARC-GZ archive.
 
 ## What this does (short)
