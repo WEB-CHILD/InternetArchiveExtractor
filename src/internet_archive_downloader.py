@@ -49,19 +49,25 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str):
     for url in internet_archive_urls:
         wayback_date, archived_url = get_wayback_date_and_archived_url(url)
 
-        if DOWNLOAD_PERIOD == Period.DAY:
-            start_date = WaybackDateObject(wayback_date.wayback_format())
-            start_date.decrement_day()
 
-            end_date = WaybackDateObject(wayback_date.wayback_format())
-            end_date.increment_day()
+        match DOWNLOAD_PERIOD:
+            case Period.DAY:
+                start_date = WaybackDateObject(wayback_date.wayback_format())
+                start_date.decrement_day()
 
-        elif DOWNLOAD_PERIOD == Period.WEEK:
-            start_date = WaybackDateObject(wayback_date.wayback_format())
-            start_date.decrement_week()
+                end_date = WaybackDateObject(wayback_date.wayback_format())
+                end_date.increment_day()
+            case Period.WEEK:
+                start_date = WaybackDateObject(wayback_date.wayback_format())
+                start_date.decrement_week()
 
-            end_date = WaybackDateObject(wayback_date.wayback_format())
-            end_date.increment_week()
+                end_date = WaybackDateObject(wayback_date.wayback_format())
+                end_date.increment_week()
+            case Period.FULL:
+                start_date = WaybackDateObject("19950101000000")
+                end_date = WaybackDateObject("20051231235959")
+            case _:
+                raise ValueError(f"Unsupported download period: {DOWNLOAD_PERIOD}")
 
         try:
             download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())

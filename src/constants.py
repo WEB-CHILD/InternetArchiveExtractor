@@ -5,6 +5,7 @@ class Period(Enum):
     """Enum for the different periods around the archived date to download."""
     DAY = "DAY"
     WEEK = "WEEK"
+    FULL = "FULL"
 
 
 # Default download period
