@@ -49,27 +49,34 @@ def write_500_warc_entry(writer, url, warc_date):
     print(f"Writing 500 record for URL: {url}")
     writer.write_record(record)
 
-def create_warc_gz(data, output_dir, output_filename):
+def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824):
     """
-    Creates a compressed WARC (Web ARChive) file (.warc.gz) from a list of data entries.
+    Creates compressed WARC (Web ARChive) files (.warc.gz) from a list of data entries.
+    Automatically splits into multiple files when reaching the size threshold.
+    
     Each entry in `data` should be a dictionary containing at least the following keys:
         - 'url_origin': The original URL of the resource.
         - 'file': The local file path to the resource content.
         - 'timestamp': The timestamp of the capture in 'YYYYMMDDHHMMSS' format.
         - 'response': The HTTP response code as a string or integer (e.g., '200', '404', '500').
+    
     The function processes each entry and writes a corresponding WARC record:
         - For HTTP 404 and 500 responses, special WARC records are created using helper functions.
         - For successful responses (HTTP 200), the content is read from the specified file and written as a WARC response record.
         - The content type is inferred from the file extension.
         - If the file does not exist, the entry is skipped and a warning is printed.
+    
     Parameters:
         data (list of dict): List of dictionaries containing resource metadata and file paths.
         output_dir (str): Directory where the output WARC file will be saved.
-        output_filename (str): Base name for the output WARC file (without extension).
+        output_filename (str): Base name for the output WARC files (without extension).
+        max_size_bytes (int): Maximum size in bytes for each WARC file (default: 1GB = 1073741824 bytes).
+    
     Side Effects:
         - Creates the output directory if it does not exist.
-        - Writes a compressed WARC file to disk.
+        - Writes one or more compressed WARC files to disk.
         - Prints progress and summary information to stdout.
+    
     Returns:
         None
     """
@@ -78,87 +85,121 @@ def create_warc_gz(data, output_dir, output_filename):
     success_counter = 0
     internal_service_error_counter = 0
     not_found_counter = 0
+    
+    # Multi-WARC support
+    warc_file_number = 1
+    current_size = 0
+    
     os.makedirs(output_dir, exist_ok=True)
-    warc_path = os.path.join(output_dir, output_filename + '.warc.gz')
-    with open(warc_path, 'wb') as stream:
-        writer = WARCWriter(stream, gzip=True)
-        for row in data:
-            total_counter += 1
-            response_code = str(row['response']).strip()
-            url = row['url_origin']
-            file_path = row['file']
+    
+    # Create the first WARC file
+    warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:03d}.warc.gz")
+    print(f"Creating WARC file: {warc_path}")
+    stream = open(warc_path, 'wb')
+    writer = WARCWriter(stream, gzip=True)
+    
+    for row in data:
+        total_counter += 1
+        response_code = str(row['response']).strip()
+        url = row['url_origin']
+        file_path = row['file']
 
-            if total_counter % 5000 == 0:
-                print(f"Processing entry number: {total_counter}:")
-            # Convert timestamp to ISO 8601 format for WARC-Date
-            try:
-                dt = datetime.strptime(row['timestamp'].strip(), "%Y%m%d%H%M%S")
-                warc_date = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            except Exception as e:
-                print(f"Invalid timestamp {row['timestamp']}: {e}")
-                warc_date = None
+        if total_counter % 5000 == 0:
+            print(f"Processing entry number: {total_counter}:")
+        # Convert timestamp to ISO 8601 format for WARC-Date
+        try:
+            dt = datetime.strptime(row['timestamp'].strip(), "%Y%m%d%H%M%S")
+            warc_date = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception as e:
+            print(f"Invalid timestamp {row['timestamp']}: {e}")
+            warc_date = None
 
-            # As 404 AND 500 
+        # Check if we need to create a new WARC file
+        if current_size >= max_size_bytes:
+            # Close current WARC file
+            stream.close()
+            print(f"Completed WARC file: {warc_path} (Size: {current_size / (1024**3):.2f} GB)")
+            
+            # Create new WARC file
+            warc_file_number += 1
+            current_size = 0
+            warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:03d}.warc.gz")
+            print(f"Creating WARC file: {warc_path}")
+            stream = open(warc_path, 'wb')
+            writer = WARCWriter(stream, gzip=True)
 
-            if response_code == '404':
-                write_404_warc_entry(writer, url, warc_date)
-                not_found_counter += 1
-                continue
-            elif response_code == '500':
-                write_500_warc_entry(writer, url, warc_date)
-                internal_service_error_counter += 1
-                continue
+        # As 404 AND 500 
 
+        if response_code == '404':
+            write_404_warc_entry(writer, url, warc_date)
+            not_found_counter += 1
+            # Track approximate size for 404 record (small overhead)
+            current_size += 500  # Approximate size of 404 record
+            continue
+        elif response_code == '500':
+            write_500_warc_entry(writer, url, warc_date)
+            internal_service_error_counter += 1
+            # Track approximate size for 500 record (small overhead)
+            current_size += 500  # Approximate size of 500 record
+            continue
+
+    
+        if not os.path.isfile(file_path):
+            print(f"File not found: {file_path}")
+            print(f"Timestamp for URL is: {row['timestamp']}")
+            print(f"Response code is: {row['response']}")
+            # TODO: If response code is 404 a 404 record should be created
+            # TODO: If response code is 500 a 500 record should be created etc. 
+            continue
+
+        # Set content type based on file extension (simple default)
+        content_type = 'text/html'
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in ['.jpg', '.jpeg']:
+            content_type = 'image/jpeg'
+        elif ext == '.png':
+            content_type = 'image/png'
+        elif ext == '.gif':
+            content_type = 'image/gif'
+        elif ext == '.css':
+            content_type = 'text/css'
+        elif ext == '.js':
+            content_type = 'application/javascript'
+        elif ext == '.pdf':
+            content_type = 'application/pdf'
+        elif ext == '.txt':
+            content_type = 'text/plain'
+
+    
+        http_headers = StatusAndHeaders('200 OK', [('Content-Type', content_type)], protocol='HTTP/1.0')
+        warc_type = 'response'
+
+        with open(file_path, 'rb') as payload:
+            record = writer.create_warc_record(
+                url,
+                warc_type,
+                payload=payload,
+                http_headers=http_headers,
+                warc_headers_dict={'WARC-Date': warc_date} if warc_date else None
+            )
+            writer.write_record(record)
+        success_counter += 1
         
-            if not os.path.isfile(file_path):
-                print(f"File not found: {file_path}")
-                print(f"Timestamp for URL is: {row['timestamp']}")
-                print(f"Response code is: {row['response']}")
-                # TODO: If response code is 404 a 404 record should be created
-                # TODO: If response code is 500 a 500 record should be created etc. 
-                continue
+        # Track the size of the file that was just written
+        current_size += os.path.getsize(file_path)
 
-            # Set content type based on file extension (simple default)
-            content_type = 'text/html'
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in ['.jpg', '.jpeg']:
-                content_type = 'image/jpeg'
-            elif ext == '.png':
-                content_type = 'image/png'
-            elif ext == '.gif':
-                content_type = 'image/gif'
-            elif ext == '.css':
-                content_type = 'text/css'
-            elif ext == '.js':
-                content_type = 'application/javascript'
-            elif ext == '.pdf':
-                content_type = 'application/pdf'
-            elif ext == '.txt':
-                content_type = 'text/plain'
-
-        
-            http_headers = StatusAndHeaders('200 OK', [('Content-Type', content_type)], protocol='HTTP/1.0')
-            warc_type = 'response'
-
-            with open(file_path, 'rb') as payload:
-                record = writer.create_warc_record(
-                    url,
-                    warc_type,
-                    payload=payload,
-                    http_headers=http_headers,
-                    warc_headers_dict={'WARC-Date': warc_date} if warc_date else None
-                )
-                writer.write_record(record)
-            success_counter += 1
-
-
-        print(
-            f"\nWARC creation summary:\n"
-            f"  Successful records:     {success_counter}\n"
-            f"  Not found (404):        {not_found_counter}\n"
-            f"  Internal errors (500):  {internal_service_error_counter}\n"
-            f"  Total processed:        {len(data)}"
-        )
+    # Close the last WARC file
+    stream.close()
+    print(f"Completed WARC file: {warc_path})")
+    
+    print(
+        f"\nWARC creation summary:\n"
+        f"  Successful records:     {success_counter}\n"
+        f"  Not found (404):        {not_found_counter}\n"
+        f"  Internal errors (500):  {internal_service_error_counter}\n"
+        f"  Total processed:        {len(data)}\n"
+        f"  Total WARC files:       {warc_file_number}"
+    )
 
 def read_csv(input_csv):
     with open(input_csv, newline='', encoding='utf-8') as csvfile:
