@@ -18,7 +18,7 @@ parser.add_argument("--end_time", help="The end time for the CUSTOM period downl
 
 class Mode(Enum):
     """
-    Enum for the different modes of operation.
+    Enum for the different modes of operation. Modes FULL and DOWNLOAD effectively do the same thing.
     """
     FULL = 1
     DOWNLOAD = 2
@@ -66,10 +66,7 @@ def choose_mode():
         process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     elif args.mode.upper() == Mode.FULL.name:
         print("Full mode selected.")
-
         download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset)
-        combine_csv_files("waybackup_snapshots", COMBINED_CSV_PATH)
-        process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     else:
         print(f"Invalid mode: {args.mode}. Choose from 'download', 'convert' or 'full'.")
         sys.exit(1)
