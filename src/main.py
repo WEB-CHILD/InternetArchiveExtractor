@@ -7,7 +7,7 @@ from constants import Period
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
-parser.add_argument("mode", help="The mode to run the script in: 'download', 'convert' or 'full'.")
+parser.add_argument("mode", help="The mode to run the script in: 'download' or 'convert'")
 parser.add_argument("input", help="The input file or directory path.")
 parser.add_argument("--output", help="The output file name for the generated WARC file. Only applicable for modes: 'convert' or 'full'.")
 parser.add_argument("--column_name", default="Internet_Archive_URL", help="The column name in the CSV file that contains the URLs for download. Default is 'Internet_Archive_URL'.")
@@ -18,11 +18,10 @@ parser.add_argument("--end_time", help="The end time for the CUSTOM period downl
 
 class Mode(Enum):
     """
-    Enum for the different modes of operation.
+    Enum for the different modes of operation. 
     """
-    FULL = 1
-    DOWNLOAD = 2
-    CONVERT = 3
+    DOWNLOAD = 1
+    CONVERT = 2
 
 args = parser.parse_args()
 
@@ -32,7 +31,7 @@ except ValueError:
     try:
         Mode[args.mode.upper()]  
     except KeyError:
-        print(f"Invalid mode: {args.mode}. Choose from 'download', 'convert' or 'full'.")
+        print(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
         sys.exit(1)
 
 try:
@@ -64,14 +63,8 @@ def choose_mode():
         print("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
         process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
-    elif args.mode.upper() == Mode.FULL.name:
-        print("Full mode selected.")
-
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset)
-        combine_csv_files("waybackup_snapshots", COMBINED_CSV_PATH)
-        process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     else:
-        print(f"Invalid mode: {args.mode}. Choose from 'download', 'convert' or 'full'.")
+        print(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
         sys.exit(1)
 
 def main():

@@ -1,7 +1,11 @@
+import os
+import shutil
+import re
+
 from pywaybackup import PyWayBackup
 from wayback_date_object import WaybackDateObject
+from waybackup_to_warc import process_csv_file
 from constants import Period
-import re
 from sqlalchemy.exc import OperationalError
 
 from utils import import_urls_from_csv
@@ -85,7 +89,27 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
                 raise ValueError(f"Unsupported download period: {download_period}")
 
         try:
-            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset)
+
+            print(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
+            # Download each URL
+            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
+            print("Download completed, proceeding to WARC packaging.")
+           
+            # Package downloaded files into WARC
+            print("Creating WARC file for URL:", archived_url)
+
+
+            waybackup_filename = create_waybackup_filename(archived_url)
+
+            warcfile_name = waybackup_filename.replace("waybackup_", "")
+            warcfile_name = warcfile_name.replace(".", "_")
+
+            process_csv_file("./waybackup_snapshots/" + waybackup_filename, 'output',  warcfile_name)
+
+            cleanup_temporary_files()
+           
+
+        
         except OperationalError as e:
             if "index" in str(e) and "already exists" in str(e):
                 print(f"Warning: Database index already exists, continuing... ({e})")
@@ -93,7 +117,51 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
                 raise
         except TypeError as e:
             print(f"TypeError occurred: {e}")
-        
+
+def create_waybackup_filename(archived_url):
+    """
+    Constructs a waybackup CSV filename from an archived URL.
+    
+    Converts URL format to PyWayBackup's filename convention by replacing 
+    protocol separators and slashes with dots, removing duplicate punctuation.
+
+    Conversion is as follows:
+    - "http://" becomes "http."
+    - "https://" becomes "https."
+    - All "/" characters are replaced with "."
+    - Duplicate punctuation characters are reduced to a single instance. E.g., ".." becomes "."
+    
+    Args:
+        archived_url (str): The archived URL (e.g., "http://www.example.com/page")
+    
+    Returns:
+        str: Formatted filename (e.g., "waybackup_http.www.example.com.page.csv")
+    """
+    waybackup_filename = archived_url.replace("http://","http.").replace("https://","https.") + ".csv"
+    waybackup_filename = "waybackup_" + waybackup_filename
+    waybackup_filename = re.sub(r'/', '.', waybackup_filename)
+    waybackup_filename = re.sub(r'([^\w\s])\1+', r'\1', waybackup_filename)
+    return waybackup_filename
+
+def cleanup_temporary_files():
+    """
+    Cleans up temporary files and directories created during the download process.
+    
+    This function removes all content from the 'waybackup_snapshots' directory to free up disk space.
+    """
+
+    temp_dir = "./waybackup_snapshots"
+    if os.path.exists(temp_dir):
+        for item in os.listdir(temp_dir):
+            item_path = os.path.join(temp_dir, item)
+            if os.path.isfile(item_path): # delete individual files
+                os.remove(item_path)
+            elif os.path.isdir(item_path): # delete subdirectories
+                shutil.rmtree(item_path)
+        print(f"Temporary directory '{temp_dir}' has been cleaned.")
+    else:
+        print(f"No temporary directory '{temp_dir}' found to clean.")
+
     
 def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False):
     """
@@ -134,13 +202,14 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     )
 
     backup.run()
-    backup_paths = backup.paths(rel=True)
-    print(backup_paths)
+    #backup_paths = backup.paths(rel=True)
+    #print(backup_paths)
 
 
 def main():
     # Currently only doesnt support other files than the one presented here. Just need convertng to useing arguments.
-    download_urls_from_csv("./resources/curated_urls.csv", "Internet_Archive_URL")
+    # ONLY USED FOR TESTING PURPOSES
+    download_urls_from_csv("./resources/small_test.csv", "Internet_Archive_URL")
 
 if __name__ == "__main__":
     main()

@@ -7,7 +7,7 @@ pysqlite3==0.5.4
 python-dateutil==2.9.0.post0
 python-magic==0.4.27
 pytz==2025.2
-pywaybackup==4.0.0
+pywaybackup==4.1.1
 requests==2.32.3
 six==1.17.0
 tqdm==4.67.1
