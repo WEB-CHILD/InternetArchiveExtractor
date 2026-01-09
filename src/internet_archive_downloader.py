@@ -124,6 +124,12 @@ def create_waybackup_filename(archived_url):
     
     Converts URL format to PyWayBackup's filename convention by replacing 
     protocol separators and slashes with dots, removing duplicate punctuation.
+
+    Conversion is as follows:
+    - "http://" becomes "http."
+    - "https://" becomes "https."
+    - All "/" characters are replaced with "."
+    - Duplicate punctuation characters are reduced to a single instance. E.g., ".." becomes "."
     
     Args:
         archived_url (str): The archived URL (e.g., "http://www.example.com/page")
