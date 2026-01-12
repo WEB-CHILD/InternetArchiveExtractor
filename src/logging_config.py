@@ -1,5 +1,5 @@
 """
-Logging configuration for the Internet Archive Extractor application.
+Logging configuration for  Internet Archive Extractor.
 """
 
 import logging
