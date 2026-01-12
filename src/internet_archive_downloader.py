@@ -7,8 +7,11 @@ from wayback_date_object import WaybackDateObject
 from waybackup_to_warc import process_csv_file
 from constants import Period
 from sqlalchemy.exc import OperationalError
+from logging_config import get_logger
 
 from utils import import_urls_from_csv
+
+logger = get_logger(__name__)
 
 
 def get_wayback_date_and_archived_url(wayback_url: str):
@@ -64,25 +67,25 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
         match download_period:
             case Period.DAY:
-                print("DAY period selected and applied to download.")
+                logger.info("DAY period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_day()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_day()
             case Period.WEEK:
-                print("WEEK period selected and applied to download.")
+                logger.info("WEEK period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_week()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_week()
             case Period.FULL:
-                print("FULL period selected and applied to download.")
+                logger.info("FULL period selected and applied to download.")
                 start_date = WaybackDateObject("19950101000000")
                 end_date = WaybackDateObject("20051231235959")
             case Period.CUSTOM:
-                print("CUSTOM period selected and applied to download.")
+                logger.info("CUSTOM period selected and applied to download.")
                 start_date = WaybackDateObject(start_time)
                 end_date = WaybackDateObject(end_time)
             case _:
@@ -90,13 +93,13 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
         try:
 
-            print(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
+            logger.debug(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
             # Download each URL
             download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
-            print("Download completed, proceeding to WARC packaging.")
+            logger.info("Download completed, proceeding to WARC packaging.")
            
             # Package downloaded files into WARC
-            print("Creating WARC file for URL:", archived_url)
+            logger.info(f"Creating WARC file for URL: {archived_url}")
 
 
             waybackup_filename = create_waybackup_filename(archived_url)
@@ -112,11 +115,11 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
         
         except OperationalError as e:
             if "index" in str(e) and "already exists" in str(e):
-                print(f"Warning: Database index already exists, continuing... ({e})")
+                logger.warning(f"Database index already exists, continuing... ({e})")
             else:
                 raise
         except TypeError as e:
-            print(f"TypeError occurred: {e}")
+            logger.error(f"TypeError occurred: {e}")
 
 def create_waybackup_filename(archived_url):
     """
@@ -158,9 +161,9 @@ def cleanup_temporary_files():
                 os.remove(item_path)
             elif os.path.isdir(item_path): # delete subdirectories
                 shutil.rmtree(item_path)
-        print(f"Temporary directory '{temp_dir}' has been cleaned.")
+        logger.info(f"Temporary directory '{temp_dir}' has been cleaned.")
     else:
-        print(f"No temporary directory '{temp_dir}' found to clean.")
+        logger.info(f"No temporary directory '{temp_dir}' found to clean.")
 
     
 def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False):
@@ -182,10 +185,10 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
         - Prints the relative paths of the downloaded snapshots.
     """
 
-    print(f"Downloading {url} from {start_date} to {end_date}")
+    logger.info(f"Downloading {url} from {start_date} to {end_date}")
 
     if download_reset:
-        print("Download reset is enabled.")
+        logger.info("Download reset is enabled.")
 
     backup = PyWayBackup(
     url=url,

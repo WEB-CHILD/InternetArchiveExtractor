@@ -6,9 +6,11 @@ from warcio.warcwriter import WARCWriter
 from warcio.statusandheaders import StatusAndHeaders
 import csv
 from datetime import datetime
+from logging_config import get_logger
 
 
 COMBINED_CSV_PATH = "combined_output.csv"
+logger = get_logger(__name__)
 
 def remove_port_80(url):
     if ":80" in url:
@@ -31,7 +33,7 @@ def write_404_warc_entry(writer, url, warc_date):
         http_headers = http_headers,
         warc_headers_dict={'WARC-Date': warc_date} if warc_date else None
     )
-    print(f"Writing 404 record for URL: {url}")
+    logger.debug(f"Writing 404 record for URL: {url}")
     writer.write_record(record)
 
 def write_500_warc_entry(writer, url, warc_date):
@@ -44,7 +46,7 @@ def write_500_warc_entry(writer, url, warc_date):
         http_headers = http_headers,
         warc_headers_dict={'WARC-Date': warc_date} if warc_date else None
     )
-    print(f"Writing 500 record for URL: {url}")
+    logger.debug(f"Writing 500 record for URL: {url}")
     writer.write_record(record)
 
 def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824):
@@ -92,7 +94,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
     
     # Create the first WARC file
     warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:04d}.warc.gz")
-    print(f"Creating WARC file: {warc_path}")
+    logger.info(f"Creating WARC file: {warc_path}")
     stream = open(warc_path, 'wb')
     writer = WARCWriter(stream, gzip=True)
     
@@ -103,26 +105,26 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
         file_path = row['file']
 
         if total_counter % 5000 == 0:
-            print(f"Processing entry number: {total_counter}:")
+            logger.debug(f"Processing entry number: {total_counter}:")
         # Convert timestamp to ISO 8601 format for WARC-Date
         try:
             dt = datetime.strptime(row['timestamp'].strip(), "%Y%m%d%H%M%S")
             warc_date = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         except Exception as e:
-            print(f"Invalid timestamp {row['timestamp']}: {e}")
+            logger.warning(f"Invalid timestamp {row['timestamp']}: {e}")
             warc_date = None
 
         # Check if we need to create a new WARC file
         if current_size >= max_size_bytes:
             # Close current WARC file
             stream.close()
-            print(f"Completed WARC file: {warc_path} (Size: {current_size / (1024**3):.2f} GB)")
+            logger.info(f"Completed WARC file: {warc_path} (Size: {current_size / (1024**3):.2f} GB)")
             
             # Create new WARC file
             warc_file_number += 1
             current_size = 0
             warc_path = os.path.join(output_dir, f"{output_filename}-{warc_file_number:04d}.warc.gz")
-            print(f"Creating WARC file: {warc_path}")
+            logger.info(f"Creating WARC file: {warc_path}")
             stream = open(warc_path, 'wb')
             writer = WARCWriter(stream, gzip=True)
 
@@ -143,9 +145,9 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
 
     
         if not os.path.isfile(file_path):
-            print(f"File not found: {file_path}")
-            print(f"Timestamp for URL is: {row['timestamp']}")
-            print(f"Response code is: {row['response']}")
+            logger.warning(f"File not found: {file_path}")
+            logger.warning(f"Timestamp for URL is: {row['timestamp']}")
+            logger.warning(f"Response code is: {row['response']}")
             # TODO: If response code is 404 a 404 record should be created
             # TODO: If response code is 500 a 500 record should be created etc. 
             continue
@@ -188,9 +190,9 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
 
     # Close the last WARC file
     stream.close()
-    print(f"Completed WARC file: {warc_path})")
+    logger.info(f"Completed WARC file: {warc_path})")
     
-    print(
+    logger.info(
         f"\nWARC creation summary:\n"
         f"  Successful records:     {success_counter}\n"
         f"  Not found (404):        {not_found_counter}\n"
@@ -220,7 +222,7 @@ def combine_csv_files(input_directory, output_file):
     combined_df = pd.concat(df_list, ignore_index=True)
     # Write the combined DataFrame to a new CSV file
     combined_df.to_csv(output_file, index=False)
-    print(f"Combined {len(csv_files)} files into {output_file}")
+    logger.debug(f"Combined {len(csv_files)} files into {output_file}")
           
 
 def main():
@@ -233,7 +235,7 @@ def main():
     """
 
     if len(sys.argv) < 3:
-        print("Usage: python main.py <csv_file_path> <output_filename>")
+        logger.error("Usage: python main.py <csv_file_path> <output_filename>")
         sys.exit(1)
 
     csv_file_path = sys.argv[1]
