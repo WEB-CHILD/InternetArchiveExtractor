@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import shutil
 import re
@@ -7,6 +8,7 @@ from wayback_date_object import WaybackDateObject
 from waybackup_to_warc import process_csv_file
 from constants import Period
 from sqlalchemy.exc import OperationalError
+from sqlalchemy import create_engine, inspect, text
 
 from utils import import_urls_from_csv
 
@@ -89,32 +91,36 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
                 raise ValueError(f"Unsupported download period: {download_period}")
 
         try:
-
             print(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
-            # Download each URL
-            download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
-            print("Download completed, proceeding to WARC packaging.")
-           
+            
+            try:
+                # Download each URL
+                download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
+                print("Download completed, proceeding to WARC packaging.")
+            except OperationalError as e:
+                if "index" in str(e) and "already exists" in str(e):
+                    print(f"Index already exists, dropping waybackup indexes and retrying... ({e})")
+                    drop_snapshot_indexes()
+
+                    # Retry the download after dropping indexes
+                    download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format())
+                else:
+                    raise
+
             # Package downloaded files into WARC
             print("Creating WARC file for URL:", archived_url)
 
-
             waybackup_filename = create_waybackup_filename(archived_url)
-
             warcfile_name = waybackup_filename.replace("waybackup_", "")
+            warcfile_name = warcfile_name.replace(".csv", "")
             warcfile_name = warcfile_name.replace(".", "_")
 
             process_csv_file("./waybackup_snapshots/" + waybackup_filename, 'output',  warcfile_name)
 
+            drop_snapshot_indexes()
+            copy_log_files()
             cleanup_temporary_files()
            
-
-        
-        except OperationalError as e:
-            if "index" in str(e) and "already exists" in str(e):
-                print(f"Warning: Database index already exists, continuing... ({e})")
-            else:
-                raise
         except TypeError as e:
             print(f"TypeError occurred: {e}")
 
@@ -129,6 +135,7 @@ def create_waybackup_filename(archived_url):
     - "http://" becomes "http."
     - "https://" becomes "https."
     - All "/" characters are replaced with "."
+    - All ":" characters are replaced with "."
     - Duplicate punctuation characters are reduced to a single instance. E.g., ".." becomes "."
     
     Args:
@@ -140,6 +147,7 @@ def create_waybackup_filename(archived_url):
     waybackup_filename = archived_url.replace("http://","http.").replace("https://","https.") + ".csv"
     waybackup_filename = "waybackup_" + waybackup_filename
     waybackup_filename = re.sub(r'/', '.', waybackup_filename)
+    waybackup_filename = re.sub(r':', '.', waybackup_filename)
     waybackup_filename = re.sub(r'([^\w\s])\1+', r'\1', waybackup_filename)
     return waybackup_filename
 
@@ -205,6 +213,112 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     #backup_paths = backup.paths(rel=True)
     #print(backup_paths)
 
+
+def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
+    """
+    Drops all indexes in all SQLite database files 
+    found in the specified directory.
+    
+    Args:
+        directory (str): The directory path to search for SQLite database files.
+                        Defaults to "./waybackup_snapshots".
+    
+    Returns:
+        None
+    
+    Side Effects:
+        - Connects to each .db file found in the directory
+        - Drops all indexes in each database
+        - Prints status messages for each operation
+    """
+
+    if not os.path.exists(directory):
+        print(f"Directory '{directory}' does not exist.")
+        return
+    
+    db_files = [f for f in os.listdir(directory) if f.endswith('.db')]
+    
+    if not db_files:
+        print(f"No database files found in '{directory}'.")
+        return
+    
+    for db_file in db_files:
+        db_path = os.path.join(directory, db_file)
+        print(f"Processing database: {db_file}")
+        
+        try:
+            engine = create_engine(f"sqlite:///{db_path}")
+            inspector = inspect(engine)
+            
+            with engine.connect() as conn:
+                for table_name in inspector.get_table_names():
+                    indexes = inspector.get_indexes(table_name)
+                    for idx in indexes:
+                        try:
+                            conn.execute(text(f"DROP INDEX IF EXISTS {idx['name']}"))
+                            print(f"  Dropped index: {idx['name']} from table: {table_name}")
+                        except Exception as idx_error:
+                            print(f"  Failed to drop index {idx['name']}: {idx_error}")
+                conn.commit()
+            
+            engine.dispose()
+            print(f"Finished processing database: {db_file}")
+        
+        except Exception as e:
+            print(f"Error processing database {db_file}: {e}")
+
+def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = "./logs"):
+    """
+    Copies all .log files from the source directory to the destination directory.
+    
+    Args:
+        source_dir (str): The source directory to search for .log files.
+                         Defaults to "./waybackup_snapshots".
+        dest_dir (str): The destination directory to copy log files to.
+                       Defaults to "./logs".
+    
+    Returns:
+        None
+    
+    Side Effects:
+        - Creates the destination directory if it doesn't exist
+        - Copies all .log files from source to destination
+        - Prints status messages for each operation
+    """
+    if not os.path.exists(source_dir):
+        print(f"Source directory '{source_dir}' does not exist.")
+        return
+    
+    # Create destination directory if it doesn't exist
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir)
+        print(f"Created destination directory: {dest_dir}")
+    
+    log_files = [f for f in os.listdir(source_dir) if f.endswith('.log')]
+    
+    if not log_files:
+        print(f"No .log files found in '{source_dir}'.")
+        return
+    
+    for log_file in log_files:
+        source_path = os.path.join(source_dir, log_file)
+        dest_path = os.path.join(dest_dir, log_file)
+
+        # Check if file already exists and append timestamp if needed
+        if os.path.exists(dest_path):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename, extension = os.path.splitext(log_file)
+            new_filename = f"{filename}_{timestamp}.{extension}"
+            dest_path = os.path.join(dest_dir, new_filename)
+            print(f"File already exists, renaming to: {new_filename}")
+        
+        try:
+            shutil.copy2(source_path, dest_path)
+            print(f"Copied: {log_file} -> {dest_dir}")
+        except Exception as e:
+            print(f"Failed to copy {log_file}: {e}")
+    
+    print(f"Finished copying {len(log_files)} log file(s) to '{dest_dir}'.")
 
 def main():
     # Currently only doesnt support other files than the one presented here. Just need convertng to useing arguments.
