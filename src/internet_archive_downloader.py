@@ -215,7 +215,7 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
 
 def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
     """
-    Drops all indexes starting with 'idx_waybackup_snapshots' in all SQLite database files 
+    Drops all indexes in all SQLite database files 
     found in the specified directory.
     
     Args:
