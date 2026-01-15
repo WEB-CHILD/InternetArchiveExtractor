@@ -227,7 +227,7 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
     
     Side Effects:
         - Connects to each .db file found in the directory
-        - Drops indexes that start with 'idx_waybackup_snapshots' in each database
+        - Drops all indexes in each database
         - Prints status messages for each operation
     """
 
