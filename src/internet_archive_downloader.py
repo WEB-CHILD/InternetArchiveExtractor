@@ -308,7 +308,7 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
         if os.path.exists(dest_path):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename, extension = os.path.splitext(log_file)
-            new_filename = f"{filename}_{timestamp}{extension}"
+            new_filename = f"{filename}_{timestamp}.{extension}"
             dest_path = os.path.join(dest_dir, new_filename)
             print(f"File already exists, renaming to: {new_filename}")
         
