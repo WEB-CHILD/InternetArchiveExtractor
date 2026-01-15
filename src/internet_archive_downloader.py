@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import shutil
 import re
@@ -302,6 +303,14 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
     for log_file in log_files:
         source_path = os.path.join(source_dir, log_file)
         dest_path = os.path.join(dest_dir, log_file)
+
+        # Check if file already exists and append timestamp if needed
+        if os.path.exists(dest_path):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename, extension = os.path.splitext(log_file)
+            new_filename = f"{filename}_{timestamp}{extension}"
+            dest_path = os.path.join(dest_dir, new_filename)
+            print(f"File already exists, renaming to: {new_filename}")
         
         try:
             shutil.copy2(source_path, dest_path)
