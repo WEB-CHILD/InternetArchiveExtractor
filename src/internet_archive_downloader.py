@@ -131,6 +131,7 @@ def create_waybackup_filename(archived_url):
     
     Uses PyWayBackup's sanitization to ensure all special characters are safely
     converted to periods, matching the behavior of PyWayBackup's filename generation.
+    Additionally removes duplicate punctuation characters.
     
     This handles special characters like: ?, =, #, !, ~, :, /, etc.
 
@@ -140,7 +141,9 @@ def create_waybackup_filename(archived_url):
     Returns:
         str: Formatted filename (e.g., "waybackup_http.www.example.com.page.csv")
     """
-    return f"waybackup_{sanitize_filename(archived_url)}.csv"
+    sanitized = sanitize_filename(archived_url)
+    sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
+    return f"waybackup_{sanitized}.csv"
 
 def cleanup_temporary_files():
     """
