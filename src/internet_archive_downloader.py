@@ -4,6 +4,7 @@ import shutil
 import re
 
 from pywaybackup import PyWayBackup
+from pywaybackup.helper import sanitize_filename
 from wayback_date_object import WaybackDateObject
 from waybackup_to_warc import process_csv_file
 from constants import Period
@@ -128,28 +129,22 @@ def create_waybackup_filename(archived_url):
     """
     Constructs a waybackup CSV filename from an archived URL.
     
-    Converts URL format to PyWayBackup's filename convention by replacing 
-    protocol separators and slashes with dots, removing duplicate punctuation.
-
-    Conversion is as follows:
-    - "http://" becomes "http."
-    - "https://" becomes "https."
-    - All "/" characters are replaced with "."
-    - All ":" characters are replaced with "."
-    - Duplicate punctuation characters are reduced to a single instance. E.g., ".." becomes "."
+    Uses PyWayBackup's sanitization to ensure all special characters are safely
+    converted to periods, matching the behavior of PyWayBackup's filename generation.
+    Additionally removes duplicate punctuation characters.
     
+    This handles special characters like: ?, =, #, !, ~, :, /, etc.
+
     Args:
         archived_url (str): The archived URL (e.g., "http://www.example.com/page")
     
     Returns:
         str: Formatted filename (e.g., "waybackup_http.www.example.com.page.csv")
     """
-    waybackup_filename = archived_url.replace("http://","http.").replace("https://","https.") + ".csv"
-    waybackup_filename = "waybackup_" + waybackup_filename
-    waybackup_filename = re.sub(r'/', '.', waybackup_filename)
-    waybackup_filename = re.sub(r':', '.', waybackup_filename)
-    waybackup_filename = re.sub(r'([^\w\s])\1+', r'\1', waybackup_filename)
-    return waybackup_filename
+    sanitized = sanitize_filename(archived_url)
+    # Remove duplicate punctuation characters (e.g., ".." becomes ".")
+    sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
+    return f"waybackup_{sanitized}.csv"
 
 def cleanup_temporary_files():
     """
