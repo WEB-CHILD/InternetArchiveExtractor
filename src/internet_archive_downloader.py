@@ -36,7 +36,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         archived_url = match.group(2)
         return date, archived_url
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, max_snapshots_per_url: int = None):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -96,7 +96,7 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
             
             try:
                 # Download each URL
-                download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers)
+                download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers, max_snapshots_per_url)
                 print("Download completed, proceeding to WARC packaging.")
             except OperationalError as e:
                 if "index" in str(e) and "already exists" in str(e):
@@ -104,7 +104,7 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
                     drop_snapshot_indexes()
 
                     # Retry the download after dropping indexes
-                    download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers)
+                    download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers, max_snapshots_per_url)
                 else:
                     raise
 
@@ -166,7 +166,7 @@ def cleanup_temporary_files():
         print(f"No temporary directory '{temp_dir}' found to clean.")
 
     
-def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None):
+def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None, max_snapshots_per_url: int = None):
     """
     Downloads all available snapshots of a given URL from the Internet Archive's Wayback Machine within a specified date range.
 
@@ -201,7 +201,8 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     keep=True,
     workers=(workers if workers is not None else 5),
     reset=download_reset,
-    explicit=('?' in url)
+    explicit=('?' in url),
+    max_snapshots_per_url=max_snapshots_per_url   
     )
 
     backup.run()
