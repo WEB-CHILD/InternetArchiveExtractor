@@ -22,6 +22,7 @@ parser.add_argument("--end_time", help="The end time for the CUSTOM period downl
 parser.add_argument("--clean", action="store_true", help="If set, deletes the intermediate CSV, DB and CDX files after processing.")
 parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
 parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
+parser.add_argument("--log-file", help="Path to a log file. If not specified, logs only to console.")
 
 class Mode(Enum):
     """
@@ -34,7 +35,7 @@ args = parser.parse_args()
 
 # Convert log level string to logging constant
 log_level = getattr(logging, args.log_level.upper())
-setup_logging(log_level=log_level)
+setup_logging(log_level=log_level, log_file=args.log_file)
 logger = get_logger("InternetArchiveExtractor")
 
 try:
