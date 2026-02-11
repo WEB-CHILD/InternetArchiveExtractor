@@ -64,7 +64,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
         - For HTTP 404 and 500 responses, special WARC records are created using helper functions.
         - For successful responses (HTTP 200), the content is read from the specified file and written as a WARC response record.
         - The content type is inferred from the file extension.
-        - If the file does not exist, the entry is skipped and a warning is printed.
+        - If the file does not exist, the entry is skipped and a warning is logged.
     
     Parameters:
         data (list of dict): List of dictionaries containing resource metadata and file paths.
@@ -75,7 +75,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
     Side Effects:
         - Creates the output directory if it does not exist.
         - Writes one or more compressed WARC files to disk.
-        - Prints progress and summary information to stdout.
+        - Logs progress and summary information.
     
     Returns:
         None
@@ -219,28 +219,28 @@ def combine_csv_files(input_directory, output_file):
     csv_files = glob.glob(os.path.join(input_directory, "*.csv"))
     
     if not csv_files:
-        print(f"ERROR: No CSV files found in directory: {input_directory}")
-        print(f"Directory exists: {os.path.exists(input_directory)}")
-        print(f"Directory is a directory: {os.path.isdir(input_directory)}")
+        logger.error(f"No CSV files found in directory: {input_directory}")
+        logger.error(f"Directory exists: {os.path.exists(input_directory)}")
+        logger.error(f"Directory is a directory: {os.path.isdir(input_directory)}")
         if os.path.exists(input_directory):
-            print(f"Contents: {os.listdir(input_directory)[:10]}")  # Show first 10 items
+            logger.error(f"Contents: {os.listdir(input_directory)[:10]}")  # Show first 10 items
         sys.exit(1)
     
-    print(f"Found {len(csv_files)} CSV files")
+    logger.info(f"Found {len(csv_files)} CSV files")
     
     # Read and concatenate all CSV files with error handling
     df_list = []
     for f in csv_files:
         try:
-            print(f"Reading: {f}")
+            logger.debug(f"Reading: {f}")
             df = pd.read_csv(f, on_bad_lines='warn')
             df_list.append(df)
         except Exception as e:
-            print(f"ERROR reading file {f}: {type(e).__name__}: {e}")
+            logger.error(f"Reading file {f}: {type(e).__name__}: {e}")
             continue
     
     if not df_list:
-        print("ERROR: No valid CSV files could be read")
+        logger.error("No valid CSV files could be read")
         sys.exit(1)
     
     combined_df = pd.concat(df_list, ignore_index=True)
