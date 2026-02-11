@@ -111,7 +111,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
             dt = datetime.strptime(row['timestamp'].strip(), "%Y%m%d%H%M%S")
             warc_date = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         except Exception as e:
-            logger.warning(f"Invalid timestamp {row['timestamp']}: {e}")
+            logger.error(f"Invalid timestamp {row['timestamp']}: {e}")
             warc_date = None
 
         # Check if we need to create a new WARC file
@@ -145,9 +145,9 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
 
     
         if not os.path.isfile(file_path):
-            logger.warning(f"File not found: {file_path}")
-            logger.warning(f"Timestamp for URL is: {row['timestamp']}")
-            logger.warning(f"Response code is: {row['response']}")
+            logger.debug(f"File not found: {file_path}")
+            logger.debug(f"Timestamp for URL is: {row['timestamp']}")
+            logger.debug(f"Response code is: {row['response']}")
             # TODO: If response code is 404 a 404 record should be created
             # TODO: If response code is 500 a 500 record should be created etc. 
             continue
@@ -190,7 +190,7 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
 
     # Close the last WARC file
     stream.close()
-    logger.info(f"Completed WARC file: {warc_path})")
+    logger.debug(f"Completed WARC file: {warc_path})")
     
     logger.info(
         f"\nWARC creation summary:\n"

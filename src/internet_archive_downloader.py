@@ -10,7 +10,7 @@ from waybackup_to_warc import process_csv_file
 from constants import Period
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine, inspect, text
-from logging_config import get_logger
+from logging_config import get_logger, redirect_stdout_to_logger
 
 from utils import import_urls_from_csv
 
@@ -172,9 +172,9 @@ def cleanup_temporary_files():
                 os.remove(item_path)
             elif os.path.isdir(item_path): # delete subdirectories
                 shutil.rmtree(item_path)
-        logger.info(f"Temporary directory '{temp_dir}' has been cleaned.")
+        logger.debug(f"Temporary directory '{temp_dir}' has been cleaned.")
     else:
-        logger.info(f"No temporary directory '{temp_dir}' found to clean.")
+        logger.debug(f"No temporary directory '{temp_dir}' found to clean.")
 
     
 def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None):
@@ -200,23 +200,24 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     if download_reset:
         logger.info("Download reset is enabled.")
 
-    backup = PyWayBackup(
-    url=url,
-    all=True,
-    start=start_date,
-    end=end_date,
-    silent=False,
-    debug=True,
-    log=True,
-    keep=True,
-    workers=(workers if workers is not None else 5),
-    reset=download_reset,
-    explicit=('?' in url)
-    )
-
-    backup.run()
-    #backup_paths = backup.paths(rel=True)
-    #print(backup_paths)
+    with redirect_stdout_to_logger(logger):
+        backup = PyWayBackup(
+            url=url,
+            all=True,
+            start=start_date,
+            end=end_date,
+            silent=False,
+            debug=True,
+            log=True,
+            keep=True,
+            workers=(workers if workers is not None else 5),
+            reset=download_reset,
+            explicit=('?' in url)
+        )
+        
+        backup.run()
+        #backup_paths = backup.paths(rel=True)
+        #print(backup_paths)
 
 
 def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
@@ -238,13 +239,13 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
     """
 
     if not os.path.exists(directory):
-        logger.warning(f"Directory '{directory}' does not exist.")
+        logger.info(f"Directory '{directory}' does not exist.")
         return
     
     db_files = [f for f in os.listdir(directory) if f.endswith('.db')]
     
     if not db_files:
-        logger.warning(f"No database files found in '{directory}'.")
+        logger.info(f"No database files found in '{directory}'.")
         return
     
     for db_file in db_files:
@@ -291,13 +292,13 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
         - Logs status messages for each operation
     """
     if not os.path.exists(source_dir):
-        logger.warning(f"Source directory '{source_dir}' does not exist.")
+        logger.debug(f"Source directory '{source_dir}' does not exist.")
         return
     
     # Create destination directory if it doesn't exist
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
-        logger.info(f"Created destination directory: {dest_dir}")
+        logger.debug(f"Created destination directory: {dest_dir}")
     
     log_files = [f for f in os.listdir(source_dir) if f.endswith('.log')]
     
@@ -323,7 +324,7 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
         except Exception as e:
             logger.error(f"Failed to copy {log_file}: {e}")
     
-    logger.info(f"Finished copying {len(log_files)} log file(s) to '{dest_dir}'.")
+    logger.debug(f"Finished copying {len(log_files)} log file(s) to '{dest_dir}'.")
 
 def main():
     # Currently only doesnt support other files than the one presented here. Just need convertng to useing arguments.

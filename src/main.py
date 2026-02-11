@@ -1,5 +1,6 @@
 import sys
 import argparse
+import logging
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
 from internet_archive_downloader import download_urls_from_csv
@@ -7,8 +8,6 @@ from constants import Period
 from logging_config import setup_logging, get_logger
 
 # Setup logging
-setup_logging()
-logger = get_logger("InternetArchiveExtractor")
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
@@ -22,6 +21,7 @@ parser.add_argument("--start_time", help="The start time for the CUSTOM period d
 parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 parser.add_argument("--clean", action="store_true", help="If set, deletes the intermediate CSV, DB and CDX files after processing.")
 parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
+parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
 
 class Mode(Enum):
     """
@@ -31,6 +31,11 @@ class Mode(Enum):
     CONVERT = 2
 
 args = parser.parse_args()
+
+# Convert log level string to logging constant
+log_level = getattr(logging, args.log_level.upper())
+setup_logging(log_level=log_level)
+logger = get_logger("InternetArchiveExtractor")
 
 try:
     Mode(args.mode.upper())  
@@ -47,7 +52,7 @@ except ValueError:
     try:
         Period[args.period.upper()]  
     except KeyError:
-        logger.error(f"Invalid period: {args.period}. Choose from 'DAY', 'WEEK' or 'FULL'.")
+        logger.error(f"Invalid period: {args.period}. Choose from 'DAY', 'WEEK', 'FULL' or 'CUSTOM'.")
         sys.exit(1)
 
 def choose_mode():
