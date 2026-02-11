@@ -217,12 +217,36 @@ def combine_csv_files(input_directory, output_file):
     """
     # Find all CSV files in the directory
     csv_files = glob.glob(os.path.join(input_directory, "*.csv"))
-    # Read and concatenate all CSV files
-    df_list = [pd.read_csv(f) for f in csv_files]
+    
+    if not csv_files:
+        print(f"ERROR: No CSV files found in directory: {input_directory}")
+        print(f"Directory exists: {os.path.exists(input_directory)}")
+        print(f"Directory is a directory: {os.path.isdir(input_directory)}")
+        if os.path.exists(input_directory):
+            print(f"Contents: {os.listdir(input_directory)[:10]}")  # Show first 10 items
+        sys.exit(1)
+    
+    print(f"Found {len(csv_files)} CSV files")
+    
+    # Read and concatenate all CSV files with error handling
+    df_list = []
+    for f in csv_files:
+        try:
+            print(f"Reading: {f}")
+            df = pd.read_csv(f, on_bad_lines='warn')
+            df_list.append(df)
+        except Exception as e:
+            print(f"ERROR reading file {f}: {type(e).__name__}: {e}")
+            continue
+    
+    if not df_list:
+        print("ERROR: No valid CSV files could be read")
+        sys.exit(1)
+    
     combined_df = pd.concat(df_list, ignore_index=True)
     # Write the combined DataFrame to a new CSV file
     combined_df.to_csv(output_file, index=False)
-    logger.debug(f"Combined {len(csv_files)} files into {output_file}")
+    logger.debug(f"Combined {len(df_list)} files into {output_file}")
           
 
 def main():

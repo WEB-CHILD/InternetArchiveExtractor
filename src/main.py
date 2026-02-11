@@ -20,6 +20,8 @@ parser.add_argument("--period", default="DAY", help="The period around the archi
 parser.add_argument("--reset", action="store_true", help="If set, resets the download process completely.")
 parser.add_argument("--start_time", help="The start time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
+parser.add_argument("--clean", action="store_true", help="If set, deletes the intermediate CSV, DB and CDX files after processing.")
+parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
 
 class Mode(Enum):
     """
@@ -51,6 +53,8 @@ except ValueError:
 def choose_mode():
     download_period = Period(args.period.upper())
     download_reset = args.reset
+    dir_cleanup = args.clean
+    workers = args.workers
 
     if download_period == Period.CUSTOM:
         logger.info("CUSTOM period selected.")
@@ -60,7 +64,7 @@ def choose_mode():
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
         logger.info("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers)
     elif args.mode.upper() == Mode.CONVERT.name:
         logger.info("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
