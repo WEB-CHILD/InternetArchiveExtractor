@@ -70,3 +70,4 @@ dmypy.json
 waybackup_snapshots/
 waybackup_snapshots_old/
 output/
+logs/

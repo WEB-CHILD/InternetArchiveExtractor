@@ -15,7 +15,7 @@ parser.add_argument("mode", help="The mode to run the script in: 'download' or '
 parser.add_argument("input", help="The input file or directory path.")
 parser.add_argument("--output", help="The output file name for the generated WARC file. Only applicable for modes: 'convert' or 'full'.")
 parser.add_argument("--column_name", default="Internet_Archive_URL", help="The column name in the CSV file that contains the URLs for download. Default is 'Internet_Archive_URL'.")
-parser.add_argument("--period", default="DAY", help="The period around the archived date to download. Options are: 'DAY', 'WEEK', 'FULL' and 'CUSTOM'. Default is 'DAY'.")
+parser.add_argument("--period", default="FULL", help="The period around the archived date to download. Options are: 'DAY', 'WEEK', 'FULL' and 'CUSTOM'. Default is 'DAY'.")
 parser.add_argument("--reset", action="store_true", help="If set, resets the download process completely.")
 parser.add_argument("--start_time", help="The start time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
