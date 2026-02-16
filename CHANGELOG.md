@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added support for Live URLs in download modes CUSTOM and FULL
+
+
 ### Changed
 - Enhanced CSV file combination with better error handling and debugging output during WARC creation
 - Improved robustness when processing malformed CSV files
+- Changed default download mode from DAY to FULL
 
 ## [0.0.10] - 2026-01-15
 

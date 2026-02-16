@@ -35,6 +35,10 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         date = WaybackDateObject(match.group(1))
         archived_url = match.group(2)
         return date, archived_url
+    else:
+        print("Assuming URL is a live URL without a timestamp, returning date as None.")
+        return None, wayback_url
+
 
 def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None):
     """
@@ -57,13 +61,12 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
         - Handles and prints TypeError exceptions that may occur during download.
     """
     if download_period is None:
-        download_period = Period.DAY
+        download_period = Period.FULL
     
     internet_archive_urls = import_urls_from_csv(csv_file_path, url_column_name)
 
     for url in internet_archive_urls:
         wayback_date, archived_url = get_wayback_date_and_archived_url(url)
-
 
         match download_period:
             case Period.DAY:
