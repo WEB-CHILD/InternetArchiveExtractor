@@ -10,8 +10,11 @@ from waybackup_to_warc import process_csv_file
 from constants import Period
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine, inspect, text
+from logging_config import get_logger, redirect_stdout_to_logger
 
 from utils import import_urls_from_csv
+
+logger = get_logger(__name__)
 
 
 def get_wayback_date_and_archived_url(wayback_url: str):
@@ -70,40 +73,40 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
         match download_period:
             case Period.DAY:
-                print("DAY period selected and applied to download.")
+                logger.info("DAY period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_day()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_day()
             case Period.WEEK:
-                print("WEEK period selected and applied to download.")
+                logger.info("WEEK period selected and applied to download.")
                 start_date = WaybackDateObject(wayback_date.wayback_format())
                 start_date.decrement_week()
 
                 end_date = WaybackDateObject(wayback_date.wayback_format())
                 end_date.increment_week()
             case Period.FULL:
-                print("FULL period selected and applied to download.")
+                logger.info("FULL period selected and applied to download.")
                 start_date = WaybackDateObject("19950101000000")
                 end_date = WaybackDateObject("20051231235959")
             case Period.CUSTOM:
-                print("CUSTOM period selected and applied to download.")
+                logger.info("CUSTOM period selected and applied to download.")
                 start_date = WaybackDateObject(start_time)
                 end_date = WaybackDateObject(end_time)
             case _:
                 raise ValueError(f"Unsupported download period: {download_period}")
 
         try:
-            print(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
+            logger.debug(f"Calling download_single_url with URL: {archived_url}, start_date: {start_date.wayback_format()}, end_date: {end_date.wayback_format()}")
             
             try:
                 # Download each URL
                 download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers)
-                print("Download completed, proceeding to WARC packaging.")
+                logger.info("Download completed, proceeding to WARC packaging.")
             except OperationalError as e:
                 if "index" in str(e) and "already exists" in str(e):
-                    print(f"Index already exists, dropping waybackup indexes and retrying... ({e})")
+                    logger.warning(f"Index already exists, dropping waybackup indexes and retrying... ({e})")
                     drop_snapshot_indexes()
 
                     # Retry the download after dropping indexes
@@ -112,7 +115,8 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
                     raise
 
             # Package downloaded files into WARC
-            print("Creating WARC file for URL:", archived_url)
+            logger.info(f"Creating WARC file for URL: {archived_url}")
+
 
             waybackup_filename = create_waybackup_filename(archived_url)
             warcfile_name = waybackup_filename.replace("waybackup_", "")
@@ -126,8 +130,15 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
             if dir_cleanup:
                 cleanup_temporary_files()
            
+
+        
+        except OperationalError as e:
+            if "index" in str(e) and "already exists" in str(e):
+                logger.warning(f"Database index already exists, continuing... ({e})")
+            else:
+                raise
         except TypeError as e:
-            print(f"TypeError occurred: {e}")
+            logger.error(f"TypeError occurred: {e}")
 
 def create_waybackup_filename(archived_url):
     """
@@ -164,9 +175,9 @@ def cleanup_temporary_files():
                 os.remove(item_path)
             elif os.path.isdir(item_path): # delete subdirectories
                 shutil.rmtree(item_path)
-        print(f"Temporary directory '{temp_dir}' has been cleaned.")
+        logger.debug(f"Temporary directory '{temp_dir}' has been cleaned.")
     else:
-        print(f"No temporary directory '{temp_dir}' found to clean.")
+        logger.debug(f"No temporary directory '{temp_dir}' found to clean.")
 
     
 def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None):
@@ -183,33 +194,33 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
         None
 
     Side Effects:
-        - Prints progress and debug information to the console.
+        - Logs progress and debug information to the console.
         - Downloads and saves the snapshots to disk.
-        - Prints the relative paths of the downloaded snapshots.
     """
 
-    print(f"Downloading {url} from {start_date} to {end_date}")
+    logger.info(f"Downloading {url} from {start_date} to {end_date}")
 
     if download_reset:
-        print("Download reset is enabled.")
+        logger.info("Download reset is enabled.")
 
-    backup = PyWayBackup(
-    url=url,
-    all=True,
-    start=start_date,
-    end=end_date,
-    silent=False,
-    debug=True,
-    log=True,
-    keep=True,
-    workers=(workers if workers is not None else 5),
-    reset=download_reset,
-    explicit=('?' in url)
-    )
-
-    backup.run()
-    #backup_paths = backup.paths(rel=True)
-    #print(backup_paths)
+    with redirect_stdout_to_logger(logger):
+        backup = PyWayBackup(
+            url=url,
+            all=True,
+            start=start_date,
+            end=end_date,
+            silent=False,
+            debug=True,
+            log=True,
+            keep=True,
+            workers=(workers if workers is not None else 5),
+            reset=download_reset,
+            explicit=('?' in url)
+        )
+        
+        backup.run()
+        #backup_paths = backup.paths(rel=True)
+        #print(backup_paths)
 
 
 def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
@@ -227,22 +238,22 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
     Side Effects:
         - Connects to each .db file found in the directory
         - Drops all indexes in each database
-        - Prints status messages for each operation
+        - Logs status messages for each operation
     """
 
     if not os.path.exists(directory):
-        print(f"Directory '{directory}' does not exist.")
+        logger.info(f"Directory '{directory}' does not exist.")
         return
     
     db_files = [f for f in os.listdir(directory) if f.endswith('.db')]
     
     if not db_files:
-        print(f"No database files found in '{directory}'.")
+        logger.info(f"No database files found in '{directory}'.")
         return
     
     for db_file in db_files:
         db_path = os.path.join(directory, db_file)
-        print(f"Processing database: {db_file}")
+        logger.info(f"Processing database: {db_file}")
         
         try:
             engine = create_engine(f"sqlite:///{db_path}")
@@ -254,16 +265,16 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
                     for idx in indexes:
                         try:
                             conn.execute(text(f"DROP INDEX IF EXISTS {idx['name']}"))
-                            print(f"  Dropped index: {idx['name']} from table: {table_name}")
+                            logger.info(f"  Dropped index: {idx['name']} from table: {table_name}")
                         except Exception as idx_error:
-                            print(f"  Failed to drop index {idx['name']}: {idx_error}")
+                            logger.error(f"  Failed to drop index {idx['name']}: {idx_error}")
                 conn.commit()
             
             engine.dispose()
-            print(f"Finished processing database: {db_file}")
+            logger.info(f"Finished processing database: {db_file}")
         
         except Exception as e:
-            print(f"Error processing database {db_file}: {e}")
+            logger.error(f"Error processing database {db_file}: {e}")
 
 def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = "./logs"):
     """
@@ -281,21 +292,21 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
     Side Effects:
         - Creates the destination directory if it doesn't exist
         - Copies all .log files from source to destination
-        - Prints status messages for each operation
+        - Logs status messages for each operation
     """
     if not os.path.exists(source_dir):
-        print(f"Source directory '{source_dir}' does not exist.")
+        logger.debug(f"Source directory '{source_dir}' does not exist.")
         return
     
     # Create destination directory if it doesn't exist
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
-        print(f"Created destination directory: {dest_dir}")
+        logger.debug(f"Created destination directory: {dest_dir}")
     
     log_files = [f for f in os.listdir(source_dir) if f.endswith('.log')]
     
     if not log_files:
-        print(f"No .log files found in '{source_dir}'.")
+        logger.debug(f"No .log files found in '{source_dir}'.")
         return
     
     for log_file in log_files:
@@ -308,15 +319,15 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
             filename, extension = os.path.splitext(log_file)
             new_filename = f"{filename}_{timestamp}.{extension}"
             dest_path = os.path.join(dest_dir, new_filename)
-            print(f"File already exists, renaming to: {new_filename}")
+            logger.info(f"File already exists, renaming to: {new_filename}")
         
         try:
             shutil.copy2(source_path, dest_path)
-            print(f"Copied: {log_file} -> {dest_dir}")
+            logger.debug(f"Copied: {log_file} -> {dest_dir}")
         except Exception as e:
-            print(f"Failed to copy {log_file}: {e}")
+            logger.error(f"Failed to copy {log_file}: {e}")
     
-    print(f"Finished copying {len(log_files)} log file(s) to '{dest_dir}'.")
+    logger.debug(f"Finished copying {len(log_files)} log file(s) to '{dest_dir}'.")
 
 def main():
     # Currently only doesnt support other files than the one presented here. Just need convertng to useing arguments.

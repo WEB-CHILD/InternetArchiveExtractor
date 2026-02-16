@@ -1,9 +1,13 @@
 import sys
 import argparse
+import logging
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
 from internet_archive_downloader import download_urls_from_csv
 from constants import Period
+from logging_config import setup_logging, get_logger
+
+# Setup logging
 
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
@@ -17,6 +21,8 @@ parser.add_argument("--start_time", help="The start time for the CUSTOM period d
 parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 parser.add_argument("--clean", action="store_true", help="If set, deletes the intermediate CSV, DB and CDX files after processing.")
 parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
+parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
+parser.add_argument("--log-file", help="Path to a log file. If not specified, logs only to console.")
 
 class Mode(Enum):
     """
@@ -27,13 +33,18 @@ class Mode(Enum):
 
 args = parser.parse_args()
 
+# Convert log level string to logging constant
+log_level = getattr(logging, args.log_level.upper())
+setup_logging(log_level=log_level, log_file=args.log_file)
+logger = get_logger("InternetArchiveExtractor")
+
 try:
     Mode(args.mode.upper())  
 except ValueError:
     try:
         Mode[args.mode.upper()]  
     except KeyError:
-        print(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
+        logger.error(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
         sys.exit(1)
 
 try:
@@ -42,7 +53,7 @@ except ValueError:
     try:
         Period[args.period.upper()]  
     except KeyError:
-        print(f"Invalid period: {args.period}. Choose from 'DAY', 'WEEK' or 'FULL'.")
+        logger.error(f"Invalid period: {args.period}. Choose from 'DAY', 'WEEK', 'FULL' or 'CUSTOM'.")
         sys.exit(1)
 
 def choose_mode():
@@ -52,20 +63,20 @@ def choose_mode():
     workers = args.workers
 
     if download_period == Period.CUSTOM:
-        print("CUSTOM period selected.")
+        logger.info("CUSTOM period selected.")
         if not args.start_time or not args.end_time:
-            print("For CUSTOM period, both --start_time and --end_time must be provided.")
-            sys.exit(1)    
+            logger.error("For CUSTOM period, both --start_time and --end_time must be provided.")
+            sys.exit(1)
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
-        print("Download mode selected.")
+        logger.info("Download mode selected.")
         download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers)
     elif args.mode.upper() == Mode.CONVERT.name:
-        print("Convert mode selected.")
+        logger.info("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
         process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
     else:
-        print(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
+        logger.error(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
         sys.exit(1)
 
 def main():
