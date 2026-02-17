@@ -43,7 +43,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         return None, wayback_url
 
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots", warc_output: str = "./output"):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -55,6 +55,8 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
         end_time (str, optional): The end time for CUSTOM period.
         download_period (Period, optional): The period to download. Defaults to Period.DAY.
         download_reset (bool, optional): Whether to reset downloads. Defaults to False.
+        snapshot_folder (str, optional): Path to the snapshot folder. Defaults to "./waybackup_snapshots".
+        warc_output (str, optional): Path to the WARC output folder. Defaults to "./output".
 
     Returns:
         None
@@ -102,15 +104,15 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
             
             try:
                 # Download each URL
-                download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers)
+                download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers, snapshot_folder)
                 logger.info("Download completed, proceeding to WARC packaging.")
             except OperationalError as e:
                 if "index" in str(e) and "already exists" in str(e):
                     logger.warning(f"Index already exists, dropping waybackup indexes and retrying... ({e})")
-                    drop_snapshot_indexes()
+                    drop_snapshot_indexes(snapshot_folder)
 
                     # Retry the download after dropping indexes
-                    download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers)
+                    download_single_url(archived_url, start_date.wayback_format(), end_date.wayback_format(), download_reset, workers, snapshot_folder)
                 else:
                     raise
 
@@ -123,12 +125,12 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
             warcfile_name = warcfile_name.replace(".csv", "")
             warcfile_name = warcfile_name.replace(".", "_")
 
-            process_csv_file("./waybackup_snapshots/" + waybackup_filename, 'output',  warcfile_name)
+            process_csv_file(os.path.join(snapshot_folder, waybackup_filename), warc_output,  warcfile_name)
 
-            drop_snapshot_indexes()
-            copy_log_files()
+            drop_snapshot_indexes(snapshot_folder)
+            copy_log_files(snapshot_folder)
             if dir_cleanup:
-                cleanup_temporary_files()
+                cleanup_temporary_files(snapshot_folder)
            
 
         
@@ -160,14 +162,17 @@ def create_waybackup_filename(archived_url):
     sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
     return f"waybackup_{sanitized}.csv"
 
-def cleanup_temporary_files():
+def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """
     Cleans up temporary files and directories created during the download process.
     
-    This function removes all content from the 'waybackup_snapshots' directory to free up disk space.
+    This function removes all content from the snapshot directory to free up disk space.
+    
+    Args:
+        snapshot_folder (str, optional): Path to the snapshot folder. Defaults to "./waybackup_snapshots".
     """
 
-    temp_dir = "./waybackup_snapshots"
+    temp_dir = snapshot_folder
     if os.path.exists(temp_dir):
         for item in os.listdir(temp_dir):
             item_path = os.path.join(temp_dir, item)
@@ -180,7 +185,7 @@ def cleanup_temporary_files():
         logger.debug(f"No temporary directory '{temp_dir}' found to clean.")
 
     
-def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None):
+def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots"):
     """
     Downloads all available snapshots of a given URL from the Internet Archive's Wayback Machine within a specified date range.
 
@@ -189,6 +194,8 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
         start_date (str): The start date (inclusive) in 'YYYYMMDD' format.
         end_date (str): The end date (inclusive) in 'YYYYMMDD' format.
         download_reset (bool, optional): Whether to reset downloads. Defaults to False.
+        workers (int, optional): Number of worker threads. Defaults to None.
+        snapshot_folder (str, optional): Path to the snapshot folder. Defaults to "./waybackup_snapshots".
 
     Returns:
         None
@@ -215,7 +222,8 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
             keep=True,
             workers=(workers if workers is not None else 5),
             reset=download_reset,
-            explicit=('?' in url)
+            explicit=('?' in url),
+            output=snapshot_folder
         )
         
         backup.run()
@@ -223,13 +231,13 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
         #print(backup_paths)
 
 
-def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
+def drop_snapshot_indexes(snapshot_folder: str = "./waybackup_snapshots"):
     """
     Drops all indexes in all SQLite database files 
     found in the specified directory.
     
     Args:
-        directory (str): The directory path to search for SQLite database files.
+        snapshot_folder (str): The directory path to search for SQLite database files.
                         Defaults to "./waybackup_snapshots".
     
     Returns:
@@ -241,18 +249,18 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
         - Logs status messages for each operation
     """
 
-    if not os.path.exists(directory):
-        logger.info(f"Directory '{directory}' does not exist.")
+    if not os.path.exists(snapshot_folder):
+        logger.info(f"Directory '{snapshot_folder}' does not exist.")
         return
     
-    db_files = [f for f in os.listdir(directory) if f.endswith('.db')]
+    db_files = [f for f in os.listdir(snapshot_folder) if f.endswith('.db')]
     
     if not db_files:
-        logger.info(f"No database files found in '{directory}'.")
+        logger.info(f"No database files found in '{snapshot_folder}'.")
         return
     
     for db_file in db_files:
-        db_path = os.path.join(directory, db_file)
+        db_path = os.path.join(snapshot_folder, db_file)
         logger.info(f"Processing database: {db_file}")
         
         try:
@@ -276,12 +284,12 @@ def drop_snapshot_indexes(directory: str = "./waybackup_snapshots"):
         except Exception as e:
             logger.error(f"Error processing database {db_file}: {e}")
 
-def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = "./logs"):
+def copy_log_files(snapshot_folder: str = "./waybackup_snapshots", dest_dir: str = "./logs"):
     """
     Copies all .log files from the source directory to the destination directory.
     
     Args:
-        source_dir (str): The source directory to search for .log files.
+        snapshot_folder (str): The source directory to search for .log files.
                          Defaults to "./waybackup_snapshots".
         dest_dir (str): The destination directory to copy log files to.
                        Defaults to "./logs".
@@ -294,8 +302,8 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
         - Copies all .log files from source to destination
         - Logs status messages for each operation
     """
-    if not os.path.exists(source_dir):
-        logger.debug(f"Source directory '{source_dir}' does not exist.")
+    if not os.path.exists(snapshot_folder):
+        logger.debug(f"Source directory '{snapshot_folder}' does not exist.")
         return
     
     # Create destination directory if it doesn't exist
@@ -303,14 +311,14 @@ def copy_log_files(source_dir: str = "./waybackup_snapshots", dest_dir: str = ".
         os.makedirs(dest_dir)
         logger.debug(f"Created destination directory: {dest_dir}")
     
-    log_files = [f for f in os.listdir(source_dir) if f.endswith('.log')]
+    log_files = [f for f in os.listdir(snapshot_folder) if f.endswith('.log')]
     
     if not log_files:
-        logger.debug(f"No .log files found in '{source_dir}'.")
+        logger.debug(f"No .log files found in '{snapshot_folder}'.")
         return
     
     for log_file in log_files:
-        source_path = os.path.join(source_dir, log_file)
+        source_path = os.path.join(snapshot_folder, log_file)
         dest_path = os.path.join(dest_dir, log_file)
 
         # Check if file already exists and append timestamp if needed

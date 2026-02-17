@@ -21,6 +21,8 @@ parser.add_argument("--start_time", help="The start time for the CUSTOM period d
 parser.add_argument("--end_time", help="The end time for the CUSTOM period download in 'YYYYMMDDHHMMSS' format.")
 parser.add_argument("--clean", action="store_true", help="If set, deletes the intermediate CSV, DB and CDX files after processing.")
 parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
+parser.add_argument("--snapshot-folder", default="./waybackup_snapshots", help="Path to the snapshot folder where pywaybackup stores downloaded files. Default is './waybackup_snapshots'.")
+parser.add_argument("--warc-output", default="./output", help="Path to the output folder where WARC files will be stored. Default is './output'.")
 parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
 parser.add_argument("--log-file", help="Path to a log file. If not specified, logs only to console.")
 
@@ -61,6 +63,8 @@ def choose_mode():
     download_reset = args.reset
     dir_cleanup = args.clean
     workers = args.workers
+    snapshot_folder = args.snapshot_folder
+    warc_output = args.warc_output
 
     if download_period == Period.CUSTOM:
         logger.info("CUSTOM period selected.")
@@ -70,11 +74,11 @@ def choose_mode():
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
         logger.info("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers, snapshot_folder, warc_output)
     elif args.mode.upper() == Mode.CONVERT.name:
         logger.info("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
-        process_csv_file(COMBINED_CSV_PATH, 'output', args.output)
+        process_csv_file(COMBINED_CSV_PATH, warc_output, args.output)
     else:
         logger.error(f"Invalid mode: {args.mode}. Choose from 'download' or 'convert'.")
         sys.exit(1)

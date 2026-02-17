@@ -33,7 +33,7 @@ ng.
 Usage pattern for the main runner (`src/main.py`):
 
 ```bash
-python src/main.py <mode> <input> [--output OUTPUT] [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END]
+python src/main.py <mode> <input> [--output OUTPUT] [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean]
 ```
 
 ### Modes and example usage:
@@ -62,11 +62,21 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--start_time` — Start time for CUSTOM period in `YYYYMMDDHHMMSS` format
 - `--end_time` — End time for CUSTOM period in `YYYYMMDDHHMMSS` format
 - `--reset` — If present, forces re-download by passing `reset=True` to `pywaybackup`
+- `--snapshot-folder` — Path to the folder where pywaybackup stores downloaded snapshots (default: `./waybackup_snapshots`)
+- `--warc-output` — Path to the folder where WARC files will be saved (default: `./output`)
+- `--workers` — Number of worker threads for parallel downloading (default: `5`)
+- `--clean` — If present, deletes intermediate CSV, DB, and CDX files after processing
 
 **Example with CUSTOM period**:
 
 ```bash
 python src/main.py download resources/curated_urls.csv --period CUSTOM --start_time 20000101000000 --end_time 20001231235959
+```
+
+**Example with custom snapshot and WARC output folders**:
+
+```bash
+python src/main.py download resources/curated_urls.csv --snapshot-folder /data/snapshots --warc-output /data/warcs
 ```
 
 #### Convert mode — combine CSVs and produce a WARC
@@ -83,18 +93,27 @@ python src/main.py download resources/curated_urls.csv --period CUSTOM --start_t
 python src/main.py convert waybackup_snapshots --output mysite_archive
 ```
 
+**Optional flags**:
+- `--warc-output` — Path to the folder where WARC files will be saved (default: `./output`)
+
+**Example with custom WARC output folder**:
+
+```bash
+python src/main.py convert waybackup_snapshots --output mysite_archive --warc-output /data/warcs
+```
+
 **Notes**: 
 - The script combines CSV files using `pandas.concat` and writes the combined CSV to `combined_output.csv`.
-- The combined CSV is then read and converted into `output/<output>.warc.gz`.
+- The combined CSV is then read and converted into `<warc-output>/<output>.warc.gz`.
 - The CSVs are expected to contain columns: `url_origin`, `url_archive`, `file`, `timestamp`, and `response`.
 
 
 ## Important implementation notes
 - **Automatic workflow in Download mode**: When downloading, each URL is processed individually:
-  1. Downloads snapshots using `pywaybackup` to `waybackup_snapshots/` directory
+  1. Downloads snapshots using `pywaybackup` to the snapshot folder (default: `waybackup_snapshots/`, configurable via `--snapshot-folder`)
   2. Generates a CSV file with snapshot metadata
-  3. Automatically create WARC file of downloaded data (saved to `output/` directory)
-  4. Cleans up temporary files and subdirectories from `waybackup_snapshots/`
+  3. Automatically creates WARC file of downloaded data (saved to the WARC output folder, default: `output/`, configurable via `--warc-output`)
+  4. Cleans up temporary files and subdirectories from the snapshot folder (if `--clean` flag is used)
 - **Expected CSV columns**: The CSVs read by the converter must contain: `url_origin`, `url_archive`, `file`, `timestamp`, and `response`, which is created by the `pywaybackup`-package.
 - **Missing files**: The converter will skip entries whose `file` path does not exist and prints a warning
 
@@ -108,7 +127,25 @@ python src/main.py convert waybackup_snapshots --output mysite_archive
    python src/main.py download resources/curated_urls.csv --column_name Internet_Archive_URL --period DAY
    ```
 
-3. The resulting WARC files will be in the `output/` directory, named after each URL (e.g., `output/http_www_example_com_page.warc.gz`).
+3. The resulting WARC files will be in the `output/` directory (or your custom `--warc-output` directory), named after each URL (e.g., `output/http_www_example_com_page.warc.gz`).
+
+**Advanced workflow with custom directories**:
+
+```bash
+python src/main.py download resources/curated_urls.csv \
+  --column_name Internet_Archive_URL \
+  --period WEEK \
+  --snapshot-folder /mnt/data/snapshots \
+  --warc-output /mnt/data/archives \
+  --workers 10 \
+  --clean
+```
+
+This will:
+- Download snapshots to `/mnt/data/snapshots/`
+- Save WARC files to `/mnt/data/archives/`
+- Use 10 parallel workers for faster downloads
+- Clean up temporary files after each URL is processed
 
 
 ## Troubleshooting
