@@ -33,7 +33,11 @@ ng.
 Usage pattern for the main runner (`src/main.py`):
 
 ```bash
-python src/main.py <mode> <input> [--output OUTPUT] [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean]
+# Download mode
+python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean]
+
+# Convert mode
+python src/main.py convert <input> --output OUTPUT [--warc-output FOLDER]
 ```
 
 ### Modes and example usage:
@@ -41,8 +45,10 @@ python src/main.py <mode> <input> [--output OUTPUT] [--column_name COLUMN] [--pe
 #### Download mode — download snapshots listed in a CSV
 
 **Description**: Reads a CSV containing full Wayback URLs such as `https://web.archive.org/web/20251002062751/https://example.com/page` and downloads snapshots for a specified period around the archived date. After downloading each URL, the tool automatically:
-1. Converts the downloaded snapshots to a WARC file (saved in `output/` directory)
-2. Cleans up temporary files from `waybackup_snapshots/` directory
+1. Converts the downloaded snapshots to a WARC file (saved in `output/` directory, or custom location via `--warc-output`)
+2. Cleans up temporary files from `waybackup_snapshots/` directory (if `--clean` flag is used)
+
+**Note**: In download mode, WARC filenames are automatically generated from the URL. The `--output` flag is not used in this mode.
 
 **Required `input`**: Path to the CSV file to read (e.g. `resources/curated_urls.csv`). The default column name expected is `Internet_Archive_URL`.
 
@@ -85,7 +91,7 @@ python src/main.py download resources/curated_urls.csv --snapshot-folder /data/s
 
 **Required `input`**: Path to a directory that contains CSV files to combine (e.g. `waybackup_snapshots/` or any folder with CSV exports).
 
-**Required `--output`**: Name for the resulting WARC file (the code will append `.warc.gz`).
+**Required `--output`**: Base filename for the resulting WARC file (without extension). The tool will append `-0001.warc.gz`, `-0002.warc.gz`, etc.
 
 **Example**:
 
