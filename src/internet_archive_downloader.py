@@ -172,17 +172,16 @@ def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
         snapshot_folder (str, optional): Path to the snapshot folder. Defaults to "./waybackup_snapshots".
     """
 
-    temp_dir = snapshot_folder
-    if os.path.exists(temp_dir):
-        for item in os.listdir(temp_dir):
-            item_path = os.path.join(temp_dir, item)
+    if os.path.exists(snapshot_folder):
+        for item in os.listdir(snapshot_folder):
+            item_path = os.path.join(snapshot_folder, item)
             if os.path.isfile(item_path): # delete individual files
                 os.remove(item_path)
             elif os.path.isdir(item_path): # delete subdirectories
                 shutil.rmtree(item_path)
-        logger.debug(f"Temporary directory '{temp_dir}' has been cleaned.")
+        logger.debug(f"Temporary directory '{snapshot_folder}' has been cleaned.")
     else:
-        logger.debug(f"No temporary directory '{temp_dir}' found to clean.")
+        logger.debug(f"No temporary directory '{snapshot_folder}' found to clean.")
 
     
 def download_single_url(url: str, start_date: str, end_date: str, download_reset: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots"):
