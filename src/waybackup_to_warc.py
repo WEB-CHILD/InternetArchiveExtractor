@@ -81,6 +81,10 @@ def create_warc_gz(data, output_dir, output_filename, max_size_bytes=1073741824)
         None
     """
 
+    if not data:
+        logger.warning(f"No data to write for '{output_filename}'. Skipping WARC creation.")
+        return
+
     total_counter = 0
     success_counter = 0
     internal_service_error_counter = 0
@@ -207,7 +211,13 @@ def read_csv(input_csv):
         return list(reader)
 
 def process_csv_file(csv_file_path, output_dir, output_filename):
+    if not os.path.isfile(csv_file_path):
+        logger.warning(f"CSV file not found: {csv_file_path}. Skipping WARC creation.")
+        return
     data = read_csv(csv_file_path)
+    if not data:
+        logger.warning(f"CSV file is empty: {csv_file_path}. Skipping WARC creation.")
+        return
     create_warc_gz(data, output_dir, output_filename)
 
 def combine_csv_files(input_directory, output_file):
