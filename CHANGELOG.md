@@ -12,13 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--log-file` argument to specify a log file for persistent logging
 - Stdout/stderr redirection to logger for PyWayBackup output
 - `LoggerWriter` class and `redirect_stdout_to_logger` context manager in logging_config module
-- Added support for Live URLs in download modes CUSTOM and FULL
-
+- Support for Live URLs in download modes CUSTOM and FULL
+- `--clean` flag to delete intermediate CSV, DB, and CDX files after processing
+- `--workers` argument to set the number of parallel download threads (default: 5)
+- `--warc-output` argument to specify the folder where WARC files are stored (default: `./output`)
+- `--snapshot-folder` argument to specify where wayback snapshots are saved
+- Warnings when WARC input data is empty or CSV file is missing, instead of silently creating an empty WARC
 
 ### Changed
 - Enhanced CSV file combination with better error handling and debugging output during WARC creation
 - Improved robustness when processing malformed CSV files
 - Changed default download mode from DAY to FULL
+- Improved filename sanitization using PyWayBackup's helper function
+- Wildcard search is now enabled by default; explicit mode is only set when arguments are explicitly provided
+- Updated pysqlite3 dependency to version 0.6.0
+- Enhanced README with detailed usage instructions for download and convert modes
+
+### Removed
+- Unnecessary `temp_dir` from WARC creation process
 
 ## [0.0.10] - 2026-01-15
 
