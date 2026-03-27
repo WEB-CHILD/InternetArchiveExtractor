@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 import shutil
 import re
+import logging
 
 from pywaybackup import PyWayBackup
 from pywaybackup.helper import sanitize_filename
@@ -209,7 +210,7 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     if download_reset:
         logger.info("Download reset is enabled.")
 
-    with redirect_stdout_to_logger(logger):
+    with redirect_stdout_to_logger(logger, stderr_level=logging.INFO):
         backup = PyWayBackup(
             url=url,
             all=True,
