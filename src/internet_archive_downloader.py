@@ -210,6 +210,8 @@ def download_single_url(url: str, start_date: str, end_date: str, download_reset
     if download_reset:
         logger.info("Download reset is enabled.")
 
+    # PyWayBackup writes normal progress messages (e.g., "process cdx") to stderr,
+    # so map stderr to INFO here to avoid false ERROR logs.
     with redirect_stdout_to_logger(logger, stderr_level=logging.INFO):
         backup = PyWayBackup(
             url=url,
