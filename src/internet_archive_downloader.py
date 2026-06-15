@@ -1,4 +1,5 @@
 from datetime import datetime
+import glob
 import os
 import shutil
 import re
@@ -8,6 +9,7 @@ from pywaybackup import PyWayBackup
 from pywaybackup.helper import sanitize_filename
 from wayback_date_object import WaybackDateObject
 from waybackup_to_warc import process_csv_file
+from warc_outlinks import fetch_and_archive_outlinks
 from constants import Period
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine, inspect, text
@@ -44,7 +46,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         return None, wayback_url
 
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots", warc_output: str = "./output"):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots", warc_output: str = "./output", fetch_outlinks: bool = True):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -58,6 +60,9 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
         download_reset (bool, optional): Whether to reset downloads. Defaults to False.
         snapshot_folder (str, optional): Path to the snapshot folder. Defaults to "./waybackup_snapshots".
         warc_output (str, optional): Path to the WARC output folder. Defaults to "./output".
+        fetch_outlinks (bool, optional): If True, after each WARC is created, download the
+            outgoing links found in its archived pages and package them into a separate
+            "<name>_outlinks" WARC. Defaults to True.
 
     Returns:
         None
@@ -128,6 +133,10 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
             process_csv_file(os.path.join(snapshot_folder, waybackup_filename), warc_output,  warcfile_name)
 
+            # Fetch and archive outgoing links from the freshly created WARC files
+            if fetch_outlinks:
+                create_outlinks_warc(warc_output, warcfile_name)
+
             drop_snapshot_indexes(snapshot_folder)
             copy_log_files(snapshot_folder)
             if dir_cleanup:
@@ -162,6 +171,32 @@ def create_waybackup_filename(archived_url):
     sanitized = sanitize_filename(archived_url)
     sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
     return f"waybackup_{sanitized}.csv"
+
+def create_outlinks_warc(warc_output: str, warcfile_name: str):
+    """
+    Finds the WARC files just created for a source URL and archives their outgoing links.
+
+    Locates every "<warcfile_name>-XXXX.warc.gz" part file in the output folder, extracts
+    the outgoing links from the archived HTML pages, downloads each linked resource from
+    the Wayback Machine using the same capture date as the referencing page, and packages
+    the results into a separate "<warcfile_name>_outlinks-XXXX.warc.gz" WARC file.
+
+    Args:
+        warc_output (str): Path to the WARC output folder.
+        warcfile_name (str): Base name of the source WARC file(s) (without the "-XXXX" suffix).
+
+    Returns:
+        None
+    """
+    pattern = os.path.join(warc_output, f"{warcfile_name}-*.warc.gz")
+    source_warcs = sorted(glob.glob(pattern))
+
+    if not source_warcs:
+        logger.warning(f"No WARC files found for outgoing-link extraction: {pattern}")
+        return
+
+    logger.info(f"Archiving outgoing links from {len(source_warcs)} WARC file(s) for '{warcfile_name}'.")
+    fetch_and_archive_outlinks(source_warcs, warc_output, warcfile_name)
 
 def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """

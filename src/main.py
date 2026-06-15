@@ -23,6 +23,7 @@ parser.add_argument("--clean", action="store_true", help="If set, deletes the in
 parser.add_argument("--workers", type=int, default=5, help="Number of worker threads to use for downloading. Default is 5.")
 parser.add_argument("--snapshot-folder", default="./waybackup_snapshots", help="Path to the snapshot folder where pywaybackup stores downloaded files. Default is './waybackup_snapshots'.")
 parser.add_argument("--warc-output", default="./output", help="Path to the output folder where WARC files will be stored. Default is './output'.")
+parser.add_argument("--no-outlinks", action="store_true", help="If set, skips the step that downloads and archives the outgoing links found in the created WARC files.")
 parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
 parser.add_argument("--log-file", help="Path to a log file. If not specified, logs only to console.")
 
@@ -65,6 +66,7 @@ def choose_mode():
     workers = args.workers
     snapshot_folder = args.snapshot_folder
     warc_output = args.warc_output
+    fetch_outlinks = not args.no_outlinks
 
     if download_period == Period.CUSTOM:
         logger.info("CUSTOM period selected.")
@@ -74,7 +76,7 @@ def choose_mode():
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
         logger.info("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers, snapshot_folder, warc_output)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers, snapshot_folder, warc_output, fetch_outlinks)
     elif args.mode.upper() == Mode.CONVERT.name:
         logger.info("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)
