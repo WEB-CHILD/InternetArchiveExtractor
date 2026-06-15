@@ -114,6 +114,37 @@ python src/main.py convert waybackup_snapshots --output mysite_archive --warc-ou
 - The CSVs are expected to contain columns: `url_origin`, `url_archive`, `file`, `timestamp`, and `response`.
 
 
+## Running the tests
+
+The unit tests live in the `tests/` directory and are run with [pytest](https://docs.pytest.org/).
+
+1. Install the test dependency (pytest is declared as an optional `test` dependency):
+
+   ```bash
+   pip install pytest
+   # or, to install the project with its test extra:
+   pip install -e ".[test]"
+   ```
+
+2. Run the full suite from the repository root:
+
+   ```bash
+   python -m pytest
+   ```
+
+Useful variations:
+
+```bash
+python -m pytest -v                                  # verbose, one line per test
+python -m pytest tests/test_waybackup_to_warc.py     # a single test file
+python -m pytest -k outlinks                          # only tests matching "outlinks"
+```
+
+The tests are configured in `pyproject.toml` (`[tool.pytest.ini_options]`), which
+adds `src/` to the Python path automatically — so you don't need to install the
+package to run them. The tests are self-contained and stub out all network and
+`pywaybackup` calls, so no internet access is required.
+
 ## Important implementation notes
 - **Automatic workflow in Download mode**: When downloading, each URL is processed individually:
   1. Downloads snapshots using `pywaybackup` to the snapshot folder (default: `waybackup_snapshots/`, configurable via `--snapshot-folder`)
@@ -163,5 +194,4 @@ This will:
 
 ## Next steps / Improvements
 - Add argument validation to require `--output` for `convert` mode
-- Add unit tests for CSV combining and WARC creation edge cases (missing files, bad timestamps)
 
