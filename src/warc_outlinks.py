@@ -198,8 +198,8 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
         if attempt < max_retries:
             time.sleep(2 ** attempt)
 
-    if response is not None:
-        return response
+    # Retries exhausted: a final throttled/5xx response is a failure, not a
+    # resource worth archiving, so don't write it into the outlinks WARC.
     return None
 
 
@@ -339,4 +339,7 @@ class _OutlinksWarcWriter:
 
     def close(self):
         self.stream.close()
-        logger.debug(f"Completed outlinks WARC file: {self.warc_path}")
+        logger.info(
+            f"Completed outlinks WARC file: {self.warc_path} "
+            f"(Size: {self.current_size / (1024 ** 3):.2f} GB)"
+        )
