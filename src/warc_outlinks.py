@@ -198,8 +198,8 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
         if attempt < max_retries:
             time.sleep(2 ** attempt)
 
-    if response is not None:
-        return response
+    # Retries exhausted: a final throttled/5xx response is a failure, not a
+    # resource worth archiving, so don't write it into the outlinks WARC.
     return None
 
 
@@ -221,7 +221,7 @@ def fetch_and_archive_outlinks(
     max_size_bytes=1073741824,
 ):
     """
-    End-to-end outgoing-link archiving for one set of source WARC files.
+    End-to-end outgoing-link archiving for a set of WARC files.
 
     Collects outgoing links from ``source_warc_paths``, downloads each one from the
     Wayback Machine at the capture date of the referencing page, and writes the
@@ -229,7 +229,7 @@ def fetch_and_archive_outlinks(
 
     Args:
         source_warc_paths (list[str]): WARC files to extract outgoing links from.
-        output_dir (str): Directory the outlinks WARC file(s) are written to.
+        output_dir (str): Directory the downloaded resources are written to.
         output_basename (str): Base name of the source WARC (without the ``-XXXX`` suffix).
         delay (float): Politeness delay in seconds between requests to the Wayback Machine.
         timeout (int): Per-request timeout in seconds.
@@ -339,4 +339,7 @@ class _OutlinksWarcWriter:
 
     def close(self):
         self.stream.close()
-        logger.debug(f"Completed outlinks WARC file: {self.warc_path}")
+        logger.info(
+            f"Completed outlinks WARC file: {self.warc_path} "
+            f"(Size: {self.current_size / (1024 ** 3):.2f} GB)"
+        )
