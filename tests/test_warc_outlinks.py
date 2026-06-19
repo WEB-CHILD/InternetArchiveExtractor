@@ -221,11 +221,11 @@ def test_download_resource_retries_on_429():
     assert resp.status_code == 200
 
 
-def test_download_resource_returns_last_response_after_exhausting_retries():
-    """When all retry attempts return server errors, the last response is returned."""
+def test_download_resource_returns_none_after_exhausting_retries():
+    """When all retry attempts return server errors, the resource is treated as a failure (None)."""
     session = _FakeSession([_Resp(status_code=500), _Resp(status_code=503)])
     resp = o._download_archived_resource("http://a.com", "2000", session, "UA", 30, 1)
-    assert resp.status_code == 503
+    assert resp is None
     assert session.calls == 2
 
 

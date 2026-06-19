@@ -12,17 +12,6 @@ def clean_urls(dataframe):
     dataframe['url_origin'] = dataframe['url_origin'].apply(lambda x: remove_port_80(x))
     return dataframe
 
-def create_warc_gz(file_path, dataframe):
-    from warcio.archiveiterator import ArchiveIterator
-    from warcio.warcwriter import WARCWriter
-    import gzip
-
-    with gzip.open(file_path, 'wb') as stream:
-        writer = WARCWriter(stream, gzip=True)
-        for index, row in dataframe.iterrows():
-            writer.write_webpage(row['url_origin'], row['timestamp'], content_type='text/html')
-            writer.write_webpage(row['url_archive'], row['timestamp'], content_type='text/html')
-
 def import_urls_from_csv(file_path, column_name):
     """
     Imports URLs from a specified column in a CSV file.

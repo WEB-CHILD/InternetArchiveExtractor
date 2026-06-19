@@ -18,6 +18,8 @@ def test_period_lookup_by_value():
     """Period can be looked up by passing its string value to the constructor."""
     assert Period("DAY") is Period.DAY
     assert Period("FULL") is Period.FULL
+    assert Period("CUSTOM") is Period.CUSTOM
+    assert Period("WEEK") is Period.WEEK
 
 
 def test_defaults():

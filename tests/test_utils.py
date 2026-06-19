@@ -72,19 +72,4 @@ def test_import_urls_from_csv_missing_file_raises():
         import_urls_from_csv("/no/such/file.csv", "Internet_Archive_URL")
 
 
-@pytest.mark.xfail(
-    reason="utils.create_warc_gz calls WARCWriter.write_webpage, which does not "
-    "exist in warcio; the function is currently broken/dead code.",
-    raises=AttributeError,
-    strict=True,
-)
-def test_create_warc_gz_is_currently_broken(tmp_path):
-    """create_warc_gz raises AttributeError because WARCWriter.write_webpage does not exist."""
-    df = pd.DataFrame(
-        {
-            "url_origin": ["http://a.com"],
-            "url_archive": ["http://web.archive.org/a"],
-            "timestamp": ["20030409193011"],
-        }
-    )
-    utils.create_warc_gz(str(tmp_path / "out.warc.gz"), df)
+
