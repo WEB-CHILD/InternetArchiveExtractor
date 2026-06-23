@@ -35,3 +35,11 @@ internet-archive-extractor = "main:main"
 
 [project.urls]
 Homepage = "https://github.com/WEB-CHILD/InternetArchiveExtractor"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
