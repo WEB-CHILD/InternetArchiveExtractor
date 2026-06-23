@@ -189,13 +189,14 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
                 allow_redirects=True,
             )
         except requests.RequestException as e:
-            logger.debug(f"Request error for {request_url} (attempt {attempt + 1}): {e}")
+            logger.warning(f"Request error for {request_url} (attempt {attempt + 1}): {e}")
             response = None
 
         # Back off and retry on throttling / transient server errors.
         if response is not None and response.status_code not in (429,) and response.status_code < 500:
             return response
         if attempt < max_retries:
+            logger.info(f"Retrying {request_url} after {2 ** attempt} seconds (attempt {attempt + 1})...")
             time.sleep(2 ** attempt)
 
     # Retries exhausted: a final throttled/5xx response is a failure, not a
@@ -252,8 +253,8 @@ def fetch_and_archive_outlinks(
     failed = 0
     try:
         for index, (url, timestamp) in enumerate(outlinks.items(), start=1):
-            if index % 100 == 0:
-                logger.debug(f"Outlink progress: {index}/{len(outlinks)}")
+            if index % 20 == 0:
+                logger.info(f"Outlink progress: {index}/{len(outlinks)}")
 
             response = _download_archived_resource(
                 url, timestamp, session, user_agent, timeout, max_retries
@@ -271,6 +272,8 @@ def fetch_and_archive_outlinks(
                     warc_date=_timestamp_to_warc_date(capture_ts),
                 )
                 success += 1
+                if success % 20 == 0:
+                    logger.info(f"Retrieved {success}/{len(outlinks)} outgoing link(s) for '{output_basename}'.")
 
             if delay:
                 time.sleep(delay)
