@@ -16,8 +16,10 @@ from io import BytesIO
 from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urldefrag, urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from requests.adapters import HTTPAdapter
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 from warcio.statusandheaders import StatusAndHeaders
@@ -180,6 +182,7 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
     snapshot) or ``None`` if the request could not be completed.
     """
     request_url = WAYBACK_RAW_URL.format(timestamp=timestamp, url=url)
+    logger.debug(f"Downloading {request_url}...")
     for attempt in range(max_retries + 1):
         try:
             response = session.get(
@@ -215,9 +218,9 @@ def fetch_and_archive_outlinks(
     output_dir,
     output_basename,
     *,
-    delay=0.1,
-    timeout=30,
-    max_retries=2,
+    threads=5,
+    timeout=5,
+    max_retries=1,
     user_agent=DEFAULT_USER_AGENT,
     max_size_bytes=1073741824,
 ):
@@ -228,11 +231,14 @@ def fetch_and_archive_outlinks(
     Wayback Machine at the capture date of the referencing page, and writes the
     results to ``<output_dir>/<output_basename>_outlinks-XXXX.warc.gz``.
 
+    Downloads run concurrently across threads; the WARC writing itself is
+    serialized, so the output is written from a single thread.
+
     Args:
         source_warc_paths (list[str]): WARC files to extract outgoing links from.
         output_dir (str): Directory the downloaded resources are written to.
         output_basename (str): Base name of the source WARC (without the ``-XXXX`` suffix).
-        delay (float): Politeness delay in seconds between requests to the Wayback Machine.
+        threads (int): Number of concurrent download threads. Defaults to 5 (matching main.py).
         timeout (int): Per-request timeout in seconds.
         max_retries (int): Retries on throttling / transient server errors.
         user_agent (str): User-Agent header sent with each request.
@@ -243,40 +249,55 @@ def fetch_and_archive_outlinks(
         logger.info(f"No outgoing links found for '{output_basename}'. Skipping outlinks WARC.")
         return
 
-    logger.info(f"Found {len(outlinks)} unique outgoing link(s) for '{output_basename}'. Downloading...")
+    threads = max(1, threads)
+    logger.info(
+        f"Found {len(outlinks)} unique outgoing link(s) for '{output_basename}'. "
+        f"Downloading with {threads} thread(s)..."
+    )
 
     output_filename = f"{output_basename}_outlinks"
     writer_state = _OutlinksWarcWriter(output_dir, output_filename, max_size_bytes)
 
     session = requests.Session()
+    
+    # Size the connection pool to the thread count. This ensures it is possible to have all threads concurrently downloading without waiting for a connection.
+    adapter = HTTPAdapter(pool_connections=threads, pool_maxsize=threads)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    def _download(item):
+        url, timestamp = item
+        response = _download_archived_resource(
+            url, timestamp, session, user_agent, timeout, max_retries
+        )
+      
+        return url, timestamp, response
+
     success = 0
     failed = 0
     try:
-        for index, (url, timestamp) in enumerate(outlinks.items(), start=1):
-            if index % 20 == 0:
-                logger.info(f"Outlink progress: {index}/{len(outlinks)}")
-
-            response = _download_archived_resource(
-                url, timestamp, session, user_agent, timeout, max_retries
-            )
-            if response is None:
-                failed += 1
-            else:
-                capture_ts = _actual_capture_timestamp(response, timestamp)
-                writer_state.write_resource(
-                    url=url,
-                    status_code=response.status_code,
-                    reason=response.reason or "",
-                    content_type=response.headers.get("Content-Type", "application/octet-stream"),
-                    content=response.content,
-                    warc_date=_timestamp_to_warc_date(capture_ts),
-                )
-                success += 1
-                if success % 20 == 0:
-                    logger.info(f"Retrieved {success}/{len(outlinks)} outgoing link(s) for '{output_basename}'.")
-
-            if delay:
-                time.sleep(delay)
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            logger.info(f"Submitting {len(outlinks)} outgoing link(s) for download through {threads} thread(s)...")
+            futures = [executor.submit(_download, item) for item in outlinks.items()]
+            # Results are consumed (and written) here in a single thread, so the
+            # non-thread-safe writer is only ever touched serially.
+            for future in as_completed(futures):
+                url, timestamp, response = future.result()
+                if response is None:
+                    failed += 1
+                else:
+                    capture_ts = _actual_capture_timestamp(response, timestamp)
+                    writer_state.write_resource(
+                        url=url,
+                        status_code=response.status_code,
+                        reason=response.reason or "",
+                        content_type=response.headers.get("Content-Type", "application/octet-stream"),
+                        content=response.content,
+                        warc_date=_timestamp_to_warc_date(capture_ts),
+                    )
+                    success += 1
+                    if success % 20 == 0:
+                        logger.info(f"Retrieved {success}/{len(outlinks)} outgoing link(s) for '{output_basename}'.")
     finally:
         writer_state.close()
         session.close()

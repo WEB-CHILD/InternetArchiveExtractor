@@ -188,6 +188,9 @@ class _FakeSession:
             raise item
         return item
 
+    def mount(self, prefix, adapter):
+        pass
+
     def close(self):
         pass
 

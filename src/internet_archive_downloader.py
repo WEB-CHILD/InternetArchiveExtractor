@@ -135,7 +135,7 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
             # Fetch and archive outgoing links from the freshly created WARC files
             if fetch_outlinks:
-                create_outlinks_warc(warc_output, warcfile_name)
+                create_outlinks_warc(warc_output, warcfile_name, workers)
 
             drop_snapshot_indexes(snapshot_folder)
             copy_log_files(snapshot_folder)
@@ -172,7 +172,7 @@ def create_waybackup_filename(archived_url):
     sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
     return f"waybackup_{sanitized}.csv"
 
-def create_outlinks_warc(warc_output: str, warcfile_name: str):
+def create_outlinks_warc(warc_output: str, warcfile_name: str, threads: int = None):
     """
     Finds the WARC files just created for a source URL and archives their outgoing links.
 
@@ -184,6 +184,7 @@ def create_outlinks_warc(warc_output: str, warcfile_name: str):
     Args:
         warc_output (str): Path to the WARC output folder.
         warcfile_name (str): Base name of the source WARC file(s) (without the "-XXXX" suffix).
+        threads (int, optional): Number of concurrent download threads. Defaults to 5.
 
     Returns:
         None
@@ -196,7 +197,10 @@ def create_outlinks_warc(warc_output: str, warcfile_name: str):
         return
 
     logger.info(f"Archiving outgoing links from {len(source_warcs)} WARC file(s) for '{warcfile_name}'.")
-    fetch_and_archive_outlinks(source_warcs, warc_output, warcfile_name)
+    fetch_and_archive_outlinks(
+        source_warcs, warc_output, warcfile_name,
+        threads=(threads if threads is not None else 5),
+    )
 
 def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """
