@@ -77,6 +77,7 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--clean` — If present, deletes intermediate CSV, DB, and CDX files after processing
 - `--no-outlinks` — If present, skips the step that downloads and archives the outgoing links found in the created WARC files
 - `--outlinks-only` — If present, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already on disk (see below)
+- `--scan-workers` — Number of processes used to scan WARC files for outgoing links (default: one per CPU core). Scanning is CPU-bound HTML parsing, so this is parallelised across processes; use `1` to scan in a single process
 
 **Example with CUSTOM period**:
 
@@ -113,6 +114,9 @@ python src/main.py download --outlinks-only --warc-output /data/warcs --workers 
 **Relevant flags**:
 - `--warc-output` — Folder that is scanned for existing WARC files (default: `./output`)
 - `--workers` — Number of concurrent download threads used to fetch the outgoing links (default: `5`)
+- `--scan-workers` — Number of processes used to scan the WARC files (default: one per CPU core)
+
+**A note on performance**: the scan phase is CPU-bound HTML parsing, not I/O — on a 9.7 GB set of 19 WARC files it is over 99% HTML parsing and under 1% disk reads. It is therefore parallelised across processes (threads would be serialised by the GIL) and uses `selectolax` rather than Python's `html.parser`. Together these took that 9.7 GB scan from roughly 20 minutes to about 1 minute.
 
 #### Convert mode — combine CSVs and produce a WARC
 

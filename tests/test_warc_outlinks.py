@@ -172,6 +172,76 @@ def test_collect_outlinks_keeps_earliest_timestamp(tmp_path, warc_bytes_factory)
     assert outlinks["http://a.com/shared.html"] == "20000101000000"
 
 
+def test_collect_outlinks_parallel_matches_serial(tmp_path, warc_bytes_factory):
+    """A multi-process scan returns exactly the same result as a single-process scan."""
+    paths = []
+    for i in range(4):
+        warc_bytes = warc_bytes_factory(
+            [
+                (f"http://a.com/p{i}.html", "2000-03-02T20:26:05Z", "text/html",
+                 f'<a href="http://a.com/out{i}.html">x</a>'
+                 f'<a href="http://a.com/p{(i + 1) % 4}.html">next</a>'.encode()),
+            ]
+        )
+        path = tmp_path / f"src-{i:04d}.warc.gz"
+        path.write_bytes(warc_bytes)
+        paths.append(str(path))
+
+    serial = o.collect_outlinks_from_warcs(paths, scan_workers=1)
+    parallel = o.collect_outlinks_from_warcs(paths, scan_workers=4)
+
+    assert parallel == serial
+    # Cross-file self-links (p0..p3 are captured in the set) are excluded either way.
+    assert set(serial) == {f"http://a.com/out{i}.html" for i in range(4)}
+
+
+def test_collect_outlinks_parallel_keeps_earliest_timestamp(tmp_path, warc_bytes_factory):
+    """Merging worker results in file order preserves the 'earliest wins' timestamp rule."""
+    first = tmp_path / "src-0001.warc.gz"
+    first.write_bytes(warc_bytes_factory(
+        [("http://a.com/p1.html", "2000-01-01T00:00:00Z", "text/html",
+          b'<a href="http://a.com/shared.html">x</a>')]
+    ))
+    second = tmp_path / "src-0002.warc.gz"
+    second.write_bytes(warc_bytes_factory(
+        [("http://a.com/p2.html", "2001-01-01T00:00:00Z", "text/html",
+          b'<a href="http://a.com/shared.html">x</a>')]
+    ))
+    paths = [str(first), str(second)]
+
+    assert o.collect_outlinks_from_warcs(paths, scan_workers=2) == \
+        o.collect_outlinks_from_warcs(paths, scan_workers=1)
+    assert o.collect_outlinks_from_warcs(paths, scan_workers=2)[
+        "http://a.com/shared.html"] == "20000101000000"
+
+
+def test_scan_warc_for_outlinks_returns_links_and_known_urls(tmp_path, warc_bytes_factory):
+    """The per-file worker reports its own links and every URL captured in that file."""
+    path = tmp_path / "src-0001.warc.gz"
+    path.write_bytes(warc_bytes_factory(
+        [("http://a.com/index.html", "2000-03-02T20:26:05Z", "text/html",
+          b'<a href="http://b.com/out.html">x</a>')]
+    ))
+
+    outlinks, known = o.scan_warc_for_outlinks(str(path))
+
+    # The worker does NOT apply the self-link exclusion; that happens after the merge.
+    assert outlinks == {"http://b.com/out.html": "20000302202605"}
+    assert known == {"http://a.com/index.html"}
+
+
+def test_collect_outlinks_scan_workers_capped_to_file_count(tmp_path, warc_bytes_factory):
+    """Asking for more scan workers than there are files does not fail."""
+    path = tmp_path / "src-0001.warc.gz"
+    path.write_bytes(warc_bytes_factory(
+        [("http://a.com/i.html", "2000-03-02T20:26:05Z", "text/html",
+          b'<a href="http://b.com/o.html">x</a>')]
+    ))
+    assert o.collect_outlinks_from_warcs([str(path)], scan_workers=64) == {
+        "http://b.com/o.html": "20000302202605"
+    }
+
+
 # --------------------------------------------------------------------------- #
 # _download_archived_resource (mocked session)
 # --------------------------------------------------------------------------- #
@@ -305,7 +375,7 @@ def test_outlinks_writer_splits_on_size(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_fetch_and_archive_outlinks_no_links_writes_nothing(tmp_path, monkeypatch):
     """fetch_and_archive_outlinks exits early and writes no files when there are no outlinks."""
-    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths: {})
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: {})
     o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site")
     assert list(tmp_path.glob("*.warc.gz")) == []
 
@@ -314,7 +384,7 @@ def test_fetch_and_archive_outlinks_end_to_end(tmp_path, monkeypatch):
     """fetch_and_archive_outlinks downloads each outlink and stores it in a WARC file."""
     monkeypatch.setattr(
         o, "collect_outlinks_from_warcs",
-        lambda paths: {"http://a.com/out.html": "20000302202605"},
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
     )
 
     captured = _Resp(
@@ -337,7 +407,7 @@ def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch):
     """Failed downloads are counted and omitted from the WARC; the part file is still created."""
     monkeypatch.setattr(
         o, "collect_outlinks_from_warcs",
-        lambda paths: {"http://a.com/out.html": "20000302202605"},
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
     )
     # Session always raises -> download returns None -> counted as failure, no record.
     monkeypatch.setattr(

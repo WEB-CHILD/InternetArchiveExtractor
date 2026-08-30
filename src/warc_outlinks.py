@@ -14,12 +14,12 @@ import re
 import time
 from io import BytesIO
 from datetime import datetime
-from html.parser import HTMLParser
-from urllib.parse import urljoin, urldefrag, urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 import requests
 from requests.adapters import HTTPAdapter
+from selectolax.lexbor import LexborHTMLParser
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 from warcio.statusandheaders import StatusAndHeaders
@@ -57,20 +57,48 @@ _URL_ATTRS = {
 }
 
 
-class _LinkExtractor(HTMLParser):
-    """Collects outgoing hyperlinks and embedded-resource URLs from an HTML document."""
+# CSS selector matching every tag that can carry a fetchable URL.
+_URL_TAG_SELECTOR = ",".join(_URL_ATTRS)
 
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.links = []
+# Leading "scheme:" of a URL. Used instead of a full urlparse() for the two scheme
+# checks below, which are the hot path of the scan (see _normalize_links).
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
 
-    def handle_starttag(self, tag, attrs):
-        url_attrs = _URL_ATTRS.get(tag)
-        if not url_attrs:
-            return
-        for name, value in attrs:
-            if name in url_attrs and value:
-                self.links.append(value)
+
+def _normalize_links(hrefs, base_url):
+    """
+    Resolve raw href values against ``base_url`` and filter them down to the
+    fetchable HTTP(S) URLs, de-duplicated with document order preserved.
+
+    Cheap regex scheme matching replaces urlparse() here, and the fragment is cut
+    with a string slice instead of urldefrag(). Both are equivalent for the inputs
+    this sees, and avoid three of the four urlsplit() calls each href would
+    otherwise cost -- URL normalization is roughly half of total scan time.
+    """
+    links = []
+    seen = set()
+    for href in hrefs:
+        href = href.strip()
+        if not href or href[0] == "#":
+            continue
+
+        match = _SCHEME_RE.match(href)
+        if match and match.group(1).lower() in _SKIP_SCHEMES:
+            continue
+
+        absolute = urljoin(base_url, href)
+        fragment = absolute.find("#")
+        if fragment != -1:
+            absolute = absolute[:fragment]
+
+        match = _SCHEME_RE.match(absolute)
+        if not match or not match.group(1).lower().startswith("http"):
+            continue
+
+        if absolute not in seen:
+            seen.add(absolute)
+            links.append(absolute)
+    return links
 
 
 def extract_outgoing_links(html_bytes, base_url):
@@ -83,27 +111,20 @@ def extract_outgoing_links(html_bytes, base_url):
     Fragments are stripped and non-HTTP(S) schemes are discarded.
     """
     text = html_bytes.decode("utf-8", errors="replace")
-    parser = _LinkExtractor()
     try:
-        parser.feed(text)
+        tree = LexborHTMLParser(text)
     except Exception as e:  # malformed markup should never abort the run
         logger.debug(f"HTML parse error for {base_url}: {e}")
+        return []
 
-    links = []
-    seen = set()
-    for href in parser.links:
-        href = href.strip()
-        if not href or href.startswith("#"):
-            continue
-        if urlparse(href).scheme.lower() in _SKIP_SCHEMES:
-            continue
-        absolute, _ = urldefrag(urljoin(base_url, href))
-        if not urlparse(absolute).scheme.lower().startswith("http"):
-            continue
-        if absolute not in seen:
-            seen.add(absolute)
-            links.append(absolute)
-    return links
+    hrefs = []
+    for node in tree.css(_URL_TAG_SELECTOR):
+        for attr in _URL_ATTRS.get(node.tag, ()):
+            value = node.attributes.get(attr)
+            if value:
+                hrefs.append(value)
+
+    return _normalize_links(hrefs, base_url)
 
 
 def _warc_date_to_timestamp(warc_date):
@@ -122,50 +143,108 @@ def _timestamp_to_warc_date(timestamp):
         return None
 
 
-def collect_outlinks_from_warcs(source_warc_paths):
+def scan_warc_for_outlinks(warc_path):
     """
-    Walk through the given WARC files and gather every outgoing link found in the
-    archived HTML pages.
+    Scan a single WARC file for outgoing links.
 
-    Returns a dict mapping ``absolute_url -> wayback_timestamp`` (the capture date of
-    the page that linked to it). Links that point to pages already captured in the
-    source WARC files are excluded so they are not downloaded twice.
+    This is the unit of work handed to the scan worker processes, so it must stay a
+    module-level function (picklable) and must not log through a shared handler.
+
+    Args:
+        warc_path (str): The WARC file to scan.
+
+    Returns:
+        tuple[dict, set]: ``(outlinks, known_urls)`` where ``outlinks`` maps
+        ``absolute_url -> wayback_timestamp`` in document order for this file, and
+        ``known_urls`` is every URL captured in this file.
     """
     outlinks = {}
     known_urls = set()
 
-    for warc_path in source_warc_paths:
-        logger.debug(f"Scanning for outgoing links: {warc_path}")
-        with open(warc_path, "rb") as stream:
-            for record in ArchiveIterator(stream):
-                if record.rec_type != "response":
-                    continue
+    with open(warc_path, "rb") as stream:
+        for record in ArchiveIterator(stream):
+            if record.rec_type != "response":
+                continue
 
-                target_uri = record.rec_headers.get_header("WARC-Target-URI")
-                if target_uri:
-                    known_urls.add(target_uri)
+            target_uri = record.rec_headers.get_header("WARC-Target-URI")
+            if target_uri:
+                known_urls.add(target_uri)
 
-                content_type = (
-                    record.http_headers.get_header("Content-Type")
-                    if record.http_headers else None
-                )
-                if not content_type or "html" not in content_type.lower():
-                    continue
+            content_type = (
+                record.http_headers.get_header("Content-Type")
+                if record.http_headers else None
+            )
+            if not content_type or "html" not in content_type.lower():
+                continue
 
-                timestamp = _warc_date_to_timestamp(
-                    record.rec_headers.get_header("WARC-Date")
-                )
-                if timestamp is None:
-                    logger.debug(f"No usable capture date for {target_uri}; skipping its links.")
-                    continue
+            timestamp = _warc_date_to_timestamp(
+                record.rec_headers.get_header("WARC-Date")
+            )
+            if timestamp is None:
+                continue
 
-                payload = record.content_stream().read()
-                if not payload:
-                    continue
+            payload = record.content_stream().read()
+            if not payload:
+                continue
 
-                for link in extract_outgoing_links(payload, target_uri):
-                    # Keep the first (earliest-seen) timestamp for each unique URL.
-                    outlinks.setdefault(link, timestamp)
+            for link in extract_outgoing_links(payload, target_uri):
+                # Keep the first (earliest-seen) timestamp for each unique URL.
+                outlinks.setdefault(link, timestamp)
+
+    return outlinks, known_urls
+
+
+def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
+    """
+    Walk through the given WARC files and gather every outgoing link found in the
+    archived HTML pages.
+
+    Scanning is CPU-bound -- HTML parsing dominates it, with file I/O a rounding
+    error -- so the files are scanned in parallel across worker *processes*; threads
+    would be serialized by the GIL. Results are merged in source-file order, which
+    makes the output identical to a serial scan.
+
+    Args:
+        source_warc_paths (list[str]): WARC files to scan.
+        scan_workers (int, optional): Number of scan processes. Defaults to one per
+            CPU core, capped at the number of files. 1 scans in the current process.
+
+    Returns:
+        dict: ``absolute_url -> wayback_timestamp`` (the capture date of the page that
+        linked to it). Links pointing at pages already captured in the source WARC
+        files are excluded so they are not downloaded twice.
+    """
+    if scan_workers is None:
+        scan_workers = os.cpu_count() or 1
+    scan_workers = max(1, min(scan_workers, len(source_warc_paths)))
+
+    outlinks = {}
+    known_urls = set()
+
+    if scan_workers == 1:
+        results = []
+        for warc_path in source_warc_paths:
+            logger.debug(f"Scanning for outgoing links: {warc_path}")
+            results.append(scan_warc_for_outlinks(warc_path))
+    else:
+        logger.info(
+            f"Scanning {len(source_warc_paths)} WARC file(s) across {scan_workers} process(es)..."
+        )
+        with ProcessPoolExecutor(max_workers=scan_workers) as executor:
+            # Mapping in submission order keeps the merge deterministic and identical
+            # to a serial scan, which as_completed() would not.
+            futures = [
+                executor.submit(scan_warc_for_outlinks, path) for path in source_warc_paths
+            ]
+            results = []
+            for warc_path, future in zip(source_warc_paths, futures):
+                results.append(future.result())
+                logger.debug(f"Finished scanning: {warc_path}")
+
+    for file_outlinks, file_known_urls in results:
+        known_urls |= file_known_urls
+        for link, timestamp in file_outlinks.items():
+            outlinks.setdefault(link, timestamp)
 
     # Don't re-fetch pages that are already present in the source archive.
     for url in known_urls:
@@ -219,6 +298,7 @@ def fetch_and_archive_outlinks(
     output_basename,
     *,
     threads=5,
+    scan_workers=None,
     timeout=5,
     max_retries=1,
     user_agent=DEFAULT_USER_AGENT,
@@ -239,12 +319,14 @@ def fetch_and_archive_outlinks(
         output_dir (str): Directory the downloaded resources are written to.
         output_basename (str): Base name of the source WARC (without the ``-XXXX`` suffix).
         threads (int): Number of concurrent download threads. Defaults to 5 (matching main.py).
+        scan_workers (int, optional): Number of processes used to scan the source WARC
+            files for outgoing links. Defaults to one per CPU core.
         timeout (int): Per-request timeout in seconds.
         max_retries (int): Retries on throttling / transient server errors.
         user_agent (str): User-Agent header sent with each request.
         max_size_bytes (int): Size threshold at which a new WARC part file is started.
     """
-    outlinks = collect_outlinks_from_warcs(source_warc_paths)
+    outlinks = collect_outlinks_from_warcs(source_warc_paths, scan_workers=scan_workers)
     if not outlinks:
         logger.info(f"No outgoing links found for '{output_basename}'. Skipping outlinks WARC.")
         return

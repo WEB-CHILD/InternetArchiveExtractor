@@ -227,7 +227,7 @@ def test_fetch_outlinks_for_existing_warcs_processes_each_basename(tmp_path, mon
 
     monkeypatch.setattr(
         d, "create_outlinks_warc",
-        lambda output, name, threads=None: calls.append((name, threads)),
+        lambda output, name, threads=None, scan_workers=None: calls.append((name, threads)),
     )
     d.fetch_outlinks_for_existing_warcs(str(tmp_path), threads=3)
 
@@ -256,7 +256,7 @@ def test_fetch_outlinks_for_existing_warcs_continues_after_failure(tmp_path, mon
     (tmp_path / "b_com-0001.warc.gz").write_bytes(b"")
     seen = []
 
-    def flaky(output, name, threads=None):
+    def flaky(output, name, threads=None, scan_workers=None):
         seen.append(name)
         if name == "a_com":
             raise RuntimeError("boom")
