@@ -110,6 +110,16 @@ A response the archive actually served is final and is never retried — includi
 
 The defaults are deliberately generous: `--timeout 20` and `--max-retries 3`. Archive.org's tail latency is long. A sampled set of captures had a median response of 2.5s but a maximum of 25s, and its captures routinely redirect 3–6 times with each hop paying the timeout separately. A short timeout does **not** skip misses faster, since misses answer immediately; it only discards resources that do exist. On one real run a 5s timeout with a single retry threw away 175 links, of which a re-fetch found 11 out of 12 sampled to be genuine captures.
 
+##### Progress reporting
+
+The progress line is emitted on whichever comes first: every 1000 completed downloads, or 60 seconds since the last one. The count alone is not enough on a large run — with millions of links and a slow or unresponsive archive, every thread can sit in a timeout-and-retry cycle for minutes, so the next thousand completions may be hours away and a stalled run looks exactly like a slow one. The time-based heartbeat reports regardless, including before the first download finishes, and carries the number of requests still in flight:
+
+```
+Outlink progress for 'atelier_books': 0/2737803 (0.0%) - 0 ok, 0 failed, 0 not archived - 0.0/s, elapsed 1m 00s, ETA unknown, 20 in flight
+```
+
+A line whose counters have not moved between heartbeats is a stalled run; one whose `elapsed` grows while the counts climb slowly is merely slow. With no completions yet there is no rate to extrapolate from, so the ETA reads `unknown` rather than a misleading `0s`.
+
 Any request that could not be completed is recorded in `<name>_outlinks_failed.txt`, one Wayback request URL per line (e.g. `https://web.archive.org/web/20000302202605id_/http://example.com/page`). Each line is directly re-fetchable and still carries both the original URL and its capture timestamp. The file is written next to the outlinks WARC, is only created when there is at least one failure, and is overwritten on a re-run.
 
 WARC part files (`<name>-0001.warc.gz`, `<name>-0002.warc.gz`, …) are grouped back into a single source, and existing `<name>_outlinks-XXXX.warc.gz` files are skipped as sources so their links are not fetched again. Note that an existing outlinks WARC for a given name **is overwritten** by the new run.

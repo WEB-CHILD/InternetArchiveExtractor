@@ -573,6 +573,7 @@ def fetch_and_archive_outlinks(
     scan_workers=None,
     excluded_tlds=(),
     progress_every=1000,
+    progress_interval=60,
     record_redirects=True,
     timeout=DEFAULT_TIMEOUT_SECONDS,
     max_retries=DEFAULT_MAX_RETRIES,
@@ -613,7 +614,10 @@ def fetch_and_archive_outlinks(
         excluded_tlds (tuple[str]): Host suffixes whose links are skipped entirely,
             from normalize_excluded_tlds(). Empty means archive every outgoing link.
         progress_every (int): Emit an INFO progress summary every N completed downloads.
-            Defaults to 1000. Set to 0 to report only at the end.
+            Defaults to 1000. Set to 0 to leave reporting to progress_interval alone.
+        progress_interval (int): Also emit that summary if this many seconds pass
+            without one, so a stalled run is visible in a minute rather than at the
+            next thousand completions. Defaults to 60. Set to 0 to report by count only.
         record_redirects (bool): Also write a record for each real redirect followed on
             the way to a resource, so the redirect survives in the WARC. Defaults to True.
         timeout (int): Per-request timeout in seconds, applied to each hop of a
@@ -666,6 +670,25 @@ def fetch_and_archive_outlinks(
     redirects = 0
     not_archived = 0
     started_at = time.monotonic()
+    last_progress_at = started_at
+
+    def _log_progress():
+        """Emit the progress line and restart the heartbeat clock."""
+        nonlocal last_progress_at
+        last_progress_at = time.monotonic()
+        elapsed = last_progress_at - started_at
+        rate = completed / elapsed if elapsed > 0 else 0
+        # Before the first completion there is no rate to extrapolate from, and a
+        # confident "ETA 0s" on a run that has not started is worse than saying so.
+        eta = f"ETA {_format_duration((total - completed) / rate)}" if rate else "ETA unknown"
+        logger.info(
+            f"Outlink progress for '{output_basename}': "
+            f"{completed}/{total} ({100 * completed / total:.1f}%) - "
+            f"{success} ok, {failed} failed, {not_archived} not archived - "
+            f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, {eta}, "
+            f"{len(in_flight)} in flight"
+        )
+
     # Work is dispatched through a bounded window rather than submitted all at once.
     # A real run carries millions of links, and submitting them up front would build
     # that many Future and work-item objects before the first download; worse, a list
@@ -673,6 +696,7 @@ def fetch_and_archive_outlinks(
     # resident until the whole run ends. Only this many downloads are ever pending.
     in_flight_limit = max(threads * 4, 1)
     pending_work = iter(enumerate(outlinks.items(), start=1))
+    in_flight = set()
 
     try:
         with ThreadPoolExecutor(max_workers=threads) as executor:
@@ -680,7 +704,6 @@ def fetch_and_archive_outlinks(
                 f"Submitting {total} outgoing link(s) for download through {threads} thread(s), "
                 f"{in_flight_limit} at a time..."
             )
-            in_flight = set()
 
             def _refill():
                 """Top the in-flight set back up to the window from the remaining work."""
@@ -694,7 +717,17 @@ def fetch_and_archive_outlinks(
             # Results are consumed (and written) here in a single thread, so the
             # non-thread-safe writer is only ever touched serially.
             while in_flight:
-                done, still_pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                # A bounded wait, so the loop still wakes when nothing finishes. On a
+                # stalled archive every thread can sit in a timeout-and-retry cycle for
+                # minutes at a time, and waiting unbounded here would leave the run
+                # silent until the next thousand completions -- potentially hours.
+                # FIRST_COMPLETED still returns the instant a download lands, so this
+                # costs no throughput.
+                done, still_pending = wait(
+                    in_flight,
+                    timeout=progress_interval or None,
+                    return_when=FIRST_COMPLETED,
+                )
                 # Rebinding to the not-yet-finished set is what drops the finished
                 # futures; without it they would pin every response for the whole run.
                 in_flight = still_pending
@@ -763,16 +796,13 @@ def fetch_and_archive_outlinks(
                     # Completed (not just successful) downloads drive the progress line, so
                     # a run with many failures still reports that it is moving.
                     if progress_every and (completed % progress_every == 0 or completed == total):
-                        elapsed = time.monotonic() - started_at
-                        rate = completed / elapsed if elapsed > 0 else 0
-                        eta = (total - completed) / rate if rate > 0 else 0
-                        logger.info(
-                            f"Outlink progress for '{output_basename}': "
-                            f"{completed}/{total} ({100 * completed / total:.1f}%) - "
-                            f"{success} ok, {failed} failed, {not_archived} not archived - "
-                            f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, "
-                            f"ETA {_format_duration(eta)}"
-                        )
+                        _log_progress()
+
+                # Heartbeat: report even when nothing completed, so a run that has
+                # stopped making progress says so within progress_interval instead of
+                # looking identical to one that is merely slow.
+                if progress_interval and time.monotonic() - last_progress_at >= progress_interval:
+                    _log_progress()
 
                 # Releasing the last references to the finished futures (and so to
                 # the response bodies just written) before topping the window back

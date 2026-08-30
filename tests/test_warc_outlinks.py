@@ -3,6 +3,8 @@
 from io import BytesIO
 
 import gc
+import threading
+import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 import inspect
@@ -626,6 +628,161 @@ def test_progress_counts_failures_as_completed(tmp_path, monkeypatch, caplog):
     assert len(progress) == 1
     assert "1/1 (100.0%)" in progress[0]
     assert "0 ok, 1 failed" in progress[0]
+
+
+def test_progress_is_reported_while_a_run_is_stalled(tmp_path, monkeypatch, caplog):
+    """
+    The heartbeat reports even when nothing completes.
+
+    This is the case the count-based line cannot cover: on a stalled archive every
+    thread sits in a timeout-and-retry cycle, so a run can go hours without reaching
+    the next thousand completions and look identical to a hang.
+    """
+    release = threading.Event()
+    links = {f"http://a.com/p{i}.html": "20000302202605" for i in range(4)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+
+    class _StalledSession:
+        def get(self, url, **kwargs):
+            # Blocks until the test lets go, standing in for a download that is
+            # waiting out its timeout.
+            release.wait(timeout=10)
+            raise requests.RequestException("stalled")
+
+        def mount(self, *a, **kw):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, "Session", lambda: _StalledSession())
+
+    def run():
+        with caplog.at_level("INFO", logger="warc_outlinks"):
+            o.fetch_and_archive_outlinks(
+                ["unused"], str(tmp_path), "site", threads=1, max_retries=0,
+                progress_every=1000, progress_interval=0.05,
+            )
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if [r for r in caplog.records if "Outlink progress" in r.message]:
+                break
+            time.sleep(0.02)
+    finally:
+        release.set()
+        worker.join(timeout=10)
+
+    progress = [r.message for r in caplog.records if "Outlink progress" in r.message]
+    # Reported before a single download finished -- 1000 completions never arrived.
+    assert progress, "a stalled run reported nothing"
+    assert "0/4" in progress[0]
+    assert "in flight" in progress[0]
+
+
+def test_progress_before_any_completion_does_not_claim_an_eta(tmp_path, monkeypatch, caplog):
+    """With no completions there is no rate, so the line says so instead of 'ETA 0s'."""
+    release = threading.Event()
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+
+    class _StalledSession:
+        def get(self, url, **kwargs):
+            release.wait(timeout=10)
+            raise requests.RequestException("stalled")
+
+        def mount(self, *a, **kw):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, "Session", lambda: _StalledSession())
+
+    def run():
+        with caplog.at_level("INFO", logger="warc_outlinks"):
+            o.fetch_and_archive_outlinks(
+                ["unused"], str(tmp_path), "site", threads=1, max_retries=0,
+                progress_every=0, progress_interval=0.05,
+            )
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if [r for r in caplog.records if "Outlink progress" in r.message]:
+                break
+            time.sleep(0.02)
+    finally:
+        release.set()
+        worker.join(timeout=10)
+
+    progress = [r.message for r in caplog.records if "Outlink progress" in r.message]
+    assert progress
+    assert "ETA unknown" in progress[0]
+    assert "ETA 0s" not in progress[0]
+
+
+def test_heartbeat_does_not_duplicate_a_fresh_count_based_line(tmp_path, monkeypatch, caplog):
+    """A count-based line restarts the heartbeat clock, so the two never double up."""
+    links = {f"http://a.com/p{i}.html": "20000302202605" for i in range(4)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url=f"http://a.com/p{i}.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x")
+            for i in range(4)
+        ]),
+    )
+
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1,
+            progress_every=1, progress_interval=30,
+        )
+
+    progress = [r.message for r in caplog.records if "Outlink progress" in r.message]
+    # One line per completion and no extras: the run finishes far inside the interval.
+    assert [m.split()[4] for m in progress] == ["1/4", "2/4", "3/4", "4/4"]
+
+
+def test_progress_interval_zero_leaves_the_wait_unbounded(tmp_path, monkeypatch, caplog):
+    """progress_interval=0 disables the heartbeat and restores the blocking wait."""
+    seen = {}
+    real_wait = o.wait
+
+    def spy(fs, timeout=None, return_when=None):
+        seen["timeout"] = timeout
+        return real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(o, "wait", spy)
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url="http://a.com/out.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x")
+        ]),
+    )
+
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1,
+            progress_every=0, progress_interval=0,
+        )
+
+    assert seen["timeout"] is None
+    assert not [r for r in caplog.records if "Outlink progress" in r.message]
 
 
 def test_progress_every_zero_disables_progress_lines(tmp_path, monkeypatch, caplog):
