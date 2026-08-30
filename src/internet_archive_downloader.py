@@ -279,7 +279,11 @@ def fetch_outlinks_for_existing_warcs(warc_output: str = "./output", threads: in
         try:
             create_outlinks_warc(warc_output, basename, threads, scan_workers, excluded_tlds)
         except Exception as e:
-            logger.error(f"Failed to archive outgoing links for '{basename}': {e}")
+            # exc_info so the traceback survives; without it the message alone
+            # rarely says where a failure came from.
+            logger.error(
+                f"Failed to archive outgoing links for '{basename}': {e}", exc_info=True
+            )
 
 def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """

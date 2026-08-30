@@ -5,6 +5,7 @@ from io import BytesIO
 import gc
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import unquote
 
 import pytest
 import requests
@@ -897,6 +898,118 @@ def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
     # An archive miss is not a request failure, and is not worth a line of its own.
     assert not (tmp_path / "site_outlinks_failed.txt").exists()
     assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Robustness: one bad link must not abort the run
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def latin1_redirect_server():
+    """A server that answers like Wayback does for a 1990s national-language URL:
+    a 302 whose Location carries raw latin-1 bytes (Danish "a-ring" is 0xe5)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302 if "redir" in self.path else 200)
+            if "redir" in self.path:
+                self.send_header("Location", b"/target/l\xe5n.html".decode("latin-1"))
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Memento-Datetime", "Thu, 02 Mar 2000 20:26:05 GMT")
+            self.end_headers()
+            self.wfile.write(b"body")
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_plain_requests_dies_on_an_undecodable_redirect(latin1_redirect_server):
+    """The failure being guarded against is real and lives inside requests itself."""
+    with pytest.raises(UnicodeDecodeError):
+        requests.Session().get(latin1_redirect_server + "/redir", timeout=5)
+
+
+def test_tolerate_undecodable_redirects_follows_the_redirect(latin1_redirect_server):
+    """Hardening the session follows the redirect instead of raising."""
+    session = requests.Session()
+    o._tolerate_undecodable_redirects(session)
+
+    response = session.get(latin1_redirect_server + "/redir", timeout=5)
+
+    assert response.status_code == 200
+    # The chain survives, which is what _redirect_hops needs to archive the 302.
+    assert [hop.status_code for hop in response.history] == [302]
+
+
+def test_tolerate_undecodable_redirects_ignores_a_stand_in_session():
+    """A session object without get_redirect_target is left alone rather than failing."""
+    class Bare:
+        pass
+
+    bare = Bare()
+    o._tolerate_undecodable_redirects(bare)          # must not raise
+    assert not hasattr(bare, "get_redirect_target")
+
+
+def test_undecodable_redirect_does_not_abort_the_run(tmp_path, monkeypatch,
+                                                     latin1_redirect_server):
+    """One link with an undecodable redirect must not cost the rest of the run."""
+    links = {"http://bad.dk/redir.html": "20000302202605",
+             "http://good.org/plain.html": "20000302202605"}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    # Route the downloader at the local server; "redir" in the path picks the 302.
+    monkeypatch.setattr(
+        o, "WAYBACK_RAW_URL",
+        latin1_redirect_server + "/{timestamp}/{url}",
+    )
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=2)
+
+    # Both links archived: the redirect was followed rather than killing the run.
+    # (No 302 hop record here -- _redirect_hops only recognises real Wayback replay
+    # URLs, and this fixture serves from localhost.)
+    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
+    assert sorted(r[0] for r in records) == [
+        "http://bad.dk/redir.html", "http://good.org/plain.html"]
+    assert not (tmp_path / "site_outlinks_failed.txt").exists()
+
+
+def test_unexpected_error_on_one_link_is_recorded_not_fatal(tmp_path, monkeypatch):
+    """An error while handling one result must cost that link, not the whole run."""
+    links = {f"http://a.com/{i}.html": "20000302202605" for i in range(5)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url=_wb("20000302202605", f"http://a.com/{i}.html"),
+                  headers={"Content-Type": "text/html"}, content=b"x")
+            for i in range(5)
+        ]),
+    )
+
+    real_write = o._OutlinksWarcWriter.write_resource
+    calls = {"n": 0}
+
+    def _flaky_write(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise ValueError("boom")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(o._OutlinksWarcWriter, "write_resource", _flaky_write)
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    assert len(_read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))) == 4
+    # The link that failed is recorded so it can be retried.
+    assert len((tmp_path / "site_outlinks_failed.txt").read_text().splitlines()) == 1
 
 
 def test_completed_responses_are_released_during_the_run(tmp_path, monkeypatch):

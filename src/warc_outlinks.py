@@ -332,6 +332,34 @@ def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None, excluded_t
     return outlinks
 
 
+def _tolerate_undecodable_redirects(session):
+    """
+    Make a session survive a redirect whose Location header is not UTF-8.
+
+    http.client decodes header bytes as latin-1, then requests re-encodes the
+    Location back to latin-1 and decodes it as UTF-8 -- which raises on the raw
+    8-bit bytes still common in 1990s national-language URLs (Danish "a-ring" is
+    the single byte 0xe5). The exception is a UnicodeDecodeError, not a
+    RequestException, so it escapes requests entirely and kills the whole run over
+    one link. Falling back to the latin-1 reading follows the redirect instead.
+
+    Note requests then percent-encodes the non-ASCII path as UTF-8, so a target the
+    archive only holds under its latin-1 escaping may come back as a miss. That is
+    an ordinary miss rather than a crash, and the redirect itself is still archived.
+    """
+    original = getattr(session, "get_redirect_target", None)
+    if original is None:
+        return
+
+    def get_redirect_target(resp):
+        try:
+            return original(resp)
+        except UnicodeDecodeError:
+            return resp.headers["location"] if resp.is_redirect else None
+
+    session.get_redirect_target = get_redirect_target
+
+
 def _download_archived_resource(url, timestamp, session, user_agent, timeout, max_retries, progress=""):
     """
     Fetch a single resource from the Wayback Machine at the given capture date.
@@ -354,7 +382,11 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
                 timeout=timeout,
                 allow_redirects=True,
             )
-        except requests.RequestException as e:
+        except (requests.RequestException, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is not a RequestException, so it has to be named
+            # explicitly: uncaught, a single undecodable redirect aborts the run.
+            # Sessions built here are hardened against the common cause (see
+            # _tolerate_undecodable_redirects); this is the backstop for the rest.
             logger.debug(f"{prefix}Request error for {request_url} (attempt {attempt + 1}): {e}")
             response = None
 
@@ -561,6 +593,7 @@ def fetch_and_archive_outlinks(
         os.path.join(output_dir, f"{output_filename}_failed.txt"), "failed requests"
     )
     session = requests.Session()
+    _tolerate_undecodable_redirects(session)
     
     # Size the connection pool to the thread count. This ensures it is possible to have all threads concurrently downloading without waiting for a connection.
     adapter = HTTPAdapter(pool_connections=threads, pool_maxsize=threads)
@@ -616,49 +649,65 @@ def fetch_and_archive_outlinks(
                 # futures; without it they would pin every response for the whole run.
                 in_flight = still_pending
                 for future in done:
-                    url, timestamp, response = future.result()
-                    if response is None:
-                        failed += 1
-                        # The full Wayback request URL, so the line is directly re-fetchable
-                        # and still carries both the original URL and its capture timestamp.
-                        failures_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
-                    elif not _is_archived_capture(response):
-                        # Wayback has no capture for this link. Writing its error page would
-                        # put present-day web.archive.org HTML into the WARC as if the
-                        # historical site had served it.
-                        # Nothing is recorded per link: on real link sets most links are
-                        # misses, so only the running tally is worth reporting.
-                        not_archived += 1
-                    else:
-                        if record_redirects:
-                            for (hop_url, hop_status, hop_reason, hop_location,
-                                 hop_content, hop_timestamp) in _redirect_hops(response):
-                                writer_state.write_resource(
-                                    url=hop_url,
-                                    status_code=hop_status,
-                                    reason=hop_reason,
-                                    content_type="text/html",
-                                    content=hop_content,
-                                    warc_date=_timestamp_to_warc_date(hop_timestamp or timestamp),
-                                    location=hop_location,
-                                )
-                                redirects += 1
-                                logger.debug(f"Archived redirect {hop_status}: {hop_url} -> {hop_location}")
+                    # One bad link must never abort a run of millions: anything
+                    # unexpected here is recorded as a failure and the run goes on.
+                    url = timestamp = None
+                    try:
+                        url, timestamp, response = future.result()
+                        if response is None:
+                            failed += 1
+                            # The full Wayback request URL, so the line is directly re-fetchable
+                            # and still carries both the original URL and its capture timestamp.
+                            failures_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
+                        elif not _is_archived_capture(response):
+                            # Wayback has no capture for this link. Writing its error page would
+                            # put present-day web.archive.org HTML into the WARC as if the
+                            # historical site had served it.
+                            # Nothing is recorded per link: on real link sets most links are
+                            # misses, so only the running tally is worth reporting.
+                            not_archived += 1
+                        else:
+                            if record_redirects:
+                                for (hop_url, hop_status, hop_reason, hop_location,
+                                     hop_content, hop_timestamp) in _redirect_hops(response):
+                                    writer_state.write_resource(
+                                        url=hop_url,
+                                        status_code=hop_status,
+                                        reason=hop_reason,
+                                        content_type="text/html",
+                                        content=hop_content,
+                                        warc_date=_timestamp_to_warc_date(hop_timestamp or timestamp),
+                                        location=hop_location,
+                                    )
+                                    redirects += 1
+                                    logger.debug(f"Archived redirect {hop_status}: {hop_url} -> {hop_location}")
 
-                        capture_ts = _actual_capture_timestamp(response, timestamp)
-                        # Record the body under the URL it actually came from. Following a
-                        # real redirect means the content belongs to the target, not to the
-                        # URL originally requested.
-                        _, final_url = _split_wayback_url(response.url)
-                        writer_state.write_resource(
-                            url=final_url or url,
-                            status_code=response.status_code,
-                            reason=response.reason or "",
-                            content_type=response.headers.get("Content-Type", "application/octet-stream"),
-                            content=response.content,
-                            warc_date=_timestamp_to_warc_date(capture_ts),
+                            capture_ts = _actual_capture_timestamp(response, timestamp)
+                            # Record the body under the URL it actually came from. Following a
+                            # real redirect means the content belongs to the target, not to the
+                            # URL originally requested.
+                            _, final_url = _split_wayback_url(response.url)
+                            writer_state.write_resource(
+                                url=final_url or url,
+                                status_code=response.status_code,
+                                reason=response.reason or "",
+                                content_type=response.headers.get("Content-Type", "application/octet-stream"),
+                                content=response.content,
+                                warc_date=_timestamp_to_warc_date(capture_ts),
+                                # Normally absent; present when a redirect could not be
+                                # followed, and a 3xx without it is unusable on replay.
+                                location=response.headers.get("Location"),
+                            )
+                            success += 1
+                    except Exception as e:
+                        failed += 1
+                        if url is not None:
+                            failures_log.write(
+                                WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
+                        logger.warning(
+                            f"Skipping outgoing link {url or '<unknown>'}: "
+                            f"{type(e).__name__}: {e}"
                         )
-                        success += 1
 
                     completed += 1
                     # Completed (not just successful) downloads drive the progress line, so
