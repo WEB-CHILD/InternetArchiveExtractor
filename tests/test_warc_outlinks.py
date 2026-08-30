@@ -751,11 +751,10 @@ def test_archived_404_is_written_to_warc(tmp_path, monkeypatch):
 
     records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
     assert [(r[0], r[1]) for r in records] == [("http://a.com/gone.html", "404")]
-    assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
 
 
 def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
-    """A Wayback 'no capture' page is skipped and listed in the not-archived file."""
+    """A Wayback 'no capture' page is skipped silently -- not archived, not logged."""
     monkeypatch.setattr(
         o, "collect_outlinks_from_warcs",
         lambda paths, **kwargs: {"http://a.com/never.html": "20000302202605"},
@@ -772,11 +771,9 @@ def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
     o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
 
     assert _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz")) == []
-    assert (tmp_path / "site_outlinks_not_archived.txt").read_text().splitlines() == [
-        "https://web.archive.org/web/20000302202605id_/http://a.com/never.html"
-    ]
-    # An archive miss is not a request failure; the two lists stay separate.
+    # An archive miss is not a request failure, and is not worth a line of its own.
     assert not (tmp_path / "site_outlinks_failed.txt").exists()
+    assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
 
 
 def test_replay_level_redirect_hop_is_not_archived():

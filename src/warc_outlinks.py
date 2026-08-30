@@ -440,8 +440,8 @@ def fetch_and_archive_outlinks(
     body is stored under the URL it actually came from.
 
     Only responses Wayback served from an actual capture are written. A link Wayback
-    has never captured answers with a present-day error page, which is skipped and
-    listed in ``<output_dir>/<output_basename>_outlinks_not_archived.txt`` instead.
+    has never captured answers with a present-day error page; those are skipped
+    silently and only counted, since on real link sets most links are misses.
     Archived error responses -- a 404 the site really did serve at capture time -- are
     real captures and are archived like any other resource.
 
@@ -481,11 +481,6 @@ def fetch_and_archive_outlinks(
     failures_log = _UrlLog(
         os.path.join(output_dir, f"{output_filename}_failed.txt"), "failed requests"
     )
-    not_archived_log = _UrlLog(
-        os.path.join(output_dir, f"{output_filename}_not_archived.txt"),
-        "links with no Wayback capture",
-    )
-
     session = requests.Session()
     
     # Size the connection pool to the thread count. This ensures it is possible to have all threads concurrently downloading without waiting for a connection.
@@ -529,9 +524,9 @@ def fetch_and_archive_outlinks(
                     # Wayback has no capture for this link. Writing its error page would
                     # put present-day web.archive.org HTML into the WARC as if the
                     # historical site had served it.
+                    # Nothing is recorded per link: on real link sets most links are
+                    # misses, so only the running tally is worth reporting.
                     not_archived += 1
-                    not_archived_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
-                    logger.debug(f"No Wayback capture for {url}; not archived.")
                 else:
                     if record_redirects:
                         for (hop_url, hop_status, hop_reason, hop_location,
@@ -581,7 +576,6 @@ def fetch_and_archive_outlinks(
         writer_state.close()
         session.close()
         failures_log.close()
-        not_archived_log.close()
 
     logger.info(
         f"\nOutlinks WARC summary for '{output_basename}':\n"
@@ -592,7 +586,6 @@ def fetch_and_archive_outlinks(
         f"  Redirects archived: {redirects}\n"
         f"  WARC part files:    {writer_state.file_number}"
         + (f"\n  Failed requests in: {failures_log.path}" if failures_log.count else "")
-        + (f"\n  Not archived in:    {not_archived_log.path}" if not_archived_log.count else "")
     )
 
 
