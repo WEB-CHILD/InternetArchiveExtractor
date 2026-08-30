@@ -253,15 +253,20 @@ def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
     return outlinks
 
 
-def _download_archived_resource(url, timestamp, session, user_agent, timeout, max_retries):
+def _download_archived_resource(url, timestamp, session, user_agent, timeout, max_retries, progress=""):
     """
     Fetch a single resource from the Wayback Machine at the given capture date.
 
     Returns the ``requests.Response`` (after following redirects to the nearest
     snapshot) or ``None`` if the request could not be completed.
+
+    ``progress`` is an "n/total" label identifying this link's position in the
+    submitted work; it is prefixed to every log line so that interleaved output from
+    the download threads can still be placed in the overall run.
     """
     request_url = WAYBACK_RAW_URL.format(timestamp=timestamp, url=url)
-    logger.debug(f"Downloading {request_url}...")
+    prefix = f"[{progress}] " if progress else ""
+    logger.debug(f"{prefix}Downloading {request_url}...")
     for attempt in range(max_retries + 1):
         try:
             response = session.get(
@@ -271,19 +276,31 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
                 allow_redirects=True,
             )
         except requests.RequestException as e:
-            logger.warning(f"Request error for {request_url} (attempt {attempt + 1}): {e}")
+            logger.warning(f"{prefix}Request error for {request_url} (attempt {attempt + 1}): {e}")
             response = None
 
         # Back off and retry on throttling / transient server errors.
         if response is not None and response.status_code not in (429,) and response.status_code < 500:
             return response
         if attempt < max_retries:
-            logger.info(f"Retrying {request_url} after {2 ** attempt} seconds (attempt {attempt + 1})...")
+            logger.info(f"{prefix}Retrying {request_url} after {2 ** attempt} seconds (attempt {attempt + 1})...")
             time.sleep(2 ** attempt)
 
     # Retries exhausted: a final throttled/5xx response is a failure, not a
     # resource worth archiving, so don't write it into the outlinks WARC.
     return None
+
+
+def _format_duration(seconds):
+    """Render a number of seconds as a compact 'HHh MMm SSs' string for progress logs."""
+    seconds = int(max(0, seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 def _actual_capture_timestamp(response, requested_timestamp):
@@ -297,8 +314,9 @@ def fetch_and_archive_outlinks(
     output_dir,
     output_basename,
     *,
-    threads=5,
+    threads=10,
     scan_workers=None,
+    progress_every=1000,
     timeout=5,
     max_retries=1,
     user_agent=DEFAULT_USER_AGENT,
@@ -321,6 +339,8 @@ def fetch_and_archive_outlinks(
         threads (int): Number of concurrent download threads. Defaults to 5 (matching main.py).
         scan_workers (int, optional): Number of processes used to scan the source WARC
             files for outgoing links. Defaults to one per CPU core.
+        progress_every (int): Emit an INFO progress summary every N completed downloads.
+            Defaults to 1000. Set to 0 to report only at the end.
         timeout (int): Per-request timeout in seconds.
         max_retries (int): Retries on throttling / transient server errors.
         user_agent (str): User-Agent header sent with each request.
@@ -347,20 +367,27 @@ def fetch_and_archive_outlinks(
     session.mount("https://", adapter)
     session.mount("http://", adapter)
 
-    def _download(item):
-        url, timestamp = item
+    total = len(outlinks)
+
+    def _download(numbered_item):
+        index, (url, timestamp) = numbered_item
         response = _download_archived_resource(
-            url, timestamp, session, user_agent, timeout, max_retries
+            url, timestamp, session, user_agent, timeout, max_retries,
+            progress=f"{index}/{total}",
         )
-      
         return url, timestamp, response
 
     success = 0
     failed = 0
+    completed = 0
+    started_at = time.monotonic()
     try:
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            logger.info(f"Submitting {len(outlinks)} outgoing link(s) for download through {threads} thread(s)...")
-            futures = [executor.submit(_download, item) for item in outlinks.items()]
+            logger.info(f"Submitting {total} outgoing link(s) for download through {threads} thread(s)...")
+            futures = [
+                executor.submit(_download, item)
+                for item in enumerate(outlinks.items(), start=1)
+            ]
             # Results are consumed (and written) here in a single thread, so the
             # non-thread-safe writer is only ever touched serially.
             for future in as_completed(futures):
@@ -378,8 +405,21 @@ def fetch_and_archive_outlinks(
                         warc_date=_timestamp_to_warc_date(capture_ts),
                     )
                     success += 1
-                    if success % 20 == 0:
-                        logger.info(f"Retrieved {success}/{len(outlinks)} outgoing link(s) for '{output_basename}'.")
+
+                completed += 1
+                # Completed (not just successful) downloads drive the progress line, so
+                # a run with many failures still reports that it is moving.
+                if progress_every and (completed % progress_every == 0 or completed == total):
+                    elapsed = time.monotonic() - started_at
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    eta = (total - completed) / rate if rate > 0 else 0
+                    logger.info(
+                        f"Outlink progress for '{output_basename}': "
+                        f"{completed}/{total} ({100 * completed / total:.1f}%) - "
+                        f"{success} ok, {failed} failed - "
+                        f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, "
+                        f"ETA {_format_duration(eta)}"
+                    )
     finally:
         writer_state.close()
         session.close()

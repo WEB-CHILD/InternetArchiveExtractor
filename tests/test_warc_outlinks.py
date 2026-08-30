@@ -419,3 +419,97 @@ def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch):
     # An (empty) WARC part file is still created.
     records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
     assert records == []
+
+
+# --------------------------------------------------------------------------- #
+# progress reporting
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [(0, "0s"), (5, "5s"), (65, "1m 05s"), (3600, "1h 00m"), (7325, "2h 02m"), (-1, "0s")],
+)
+def test_format_duration(seconds, expected):
+    """Durations render as compact h/m/s strings and never go negative."""
+    assert o._format_duration(seconds) == expected
+
+
+def test_download_archived_resource_logs_progress_prefix(monkeypatch, caplog):
+    """The 'n/total' label is prefixed to the per-request debug line."""
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([_Resp(url="http://x", status_code=200)]),
+    )
+    session = requests.Session()
+    with caplog.at_level("DEBUG", logger="warc_outlinks"):
+        o._download_archived_resource(
+            "http://a.com/x", "20000302202605", session,
+            o.DEFAULT_USER_AGENT, 5, 0, progress="7/99",
+        )
+    assert any("[7/99] Downloading" in r.message for r in caplog.records)
+
+
+def test_progress_logged_every_n_completed(tmp_path, monkeypatch, caplog):
+    """A progress summary is emitted every progress_every downloads and once at the end."""
+    links = {f"http://a.com/p{i}.html": "20000302202605" for i in range(5)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url=f"http://a.com/p{i}.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x")
+            for i in range(5)
+        ]),
+    )
+
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1, progress_every=2,
+        )
+
+    progress = [r.message for r in caplog.records if "Outlink progress" in r.message]
+    # 2 and 4 hit the interval; 5 is the final total.
+    assert [m.split()[4] for m in progress] == ["2/5", "4/5", "5/5"]
+
+
+def test_progress_counts_failures_as_completed(tmp_path, monkeypatch, caplog):
+    """Failed downloads still advance the progress counter so a bad run keeps reporting."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([requests.RequestException("x")]),
+    )
+
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1, max_retries=0, progress_every=1,
+        )
+
+    progress = [r.message for r in caplog.records if "Outlink progress" in r.message]
+    assert len(progress) == 1
+    assert "1/1 (100.0%)" in progress[0]
+    assert "0 ok, 1 failed" in progress[0]
+
+
+def test_progress_every_zero_disables_progress_lines(tmp_path, monkeypatch, caplog):
+    """progress_every=0 suppresses the periodic progress lines entirely."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url="http://a.com/out.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x")
+        ]),
+    )
+
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1, progress_every=0,
+        )
+
+    assert not [r for r in caplog.records if "Outlink progress" in r.message]
