@@ -95,6 +95,8 @@ python src/main.py download resources/curated_urls.csv --snapshot-folder /data/s
 
 **Description**: With `--outlinks-only`, nothing is downloaded from the Wayback Machine's CDX index and no source WARC files are created. The tool scans the `--warc-output` folder for the WARC files already there, and for each one downloads its outgoing links into a matching `<name>_outlinks-XXXX.warc.gz` file. Use it to (re-)run just the second step after a download that finished without its outlinks, or that was interrupted.
 
+Any request that could not be completed is recorded in `<name>_outlinks_failed.txt`, one Wayback request URL per line (e.g. `https://web.archive.org/web/20000302202605id_/http://example.com/page`). Each line is directly re-fetchable and still carries both the original URL and its capture timestamp. The file is written next to the outlinks WARC, is only created when there is at least one failure, and is overwritten on a re-run.
+
 WARC part files (`<name>-0001.warc.gz`, `<name>-0002.warc.gz`, …) are grouped back into a single source, and existing `<name>_outlinks-XXXX.warc.gz` files are skipped as sources so their links are not fetched again. Note that an existing outlinks WARC for a given name **is overwritten** by the new run.
 
 **`input` is not required** in this mode, and `--outlinks-only` cannot be combined with `--no-outlinks`.

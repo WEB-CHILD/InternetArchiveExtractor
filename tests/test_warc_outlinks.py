@@ -513,3 +513,91 @@ def test_progress_every_zero_disables_progress_lines(tmp_path, monkeypatch, capl
         )
 
     assert not [r for r in caplog.records if "Outlink progress" in r.message]
+
+
+# --------------------------------------------------------------------------- #
+# failed-request log
+# --------------------------------------------------------------------------- #
+def test_failed_requests_written_one_per_line(tmp_path, monkeypatch):
+    """Every failed request is written to <basename>_outlinks_failed.txt, one URL per line."""
+    links = {f"http://a.com/p{i}.html": "20000302202605" for i in range(3)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([requests.RequestException("x") for _ in range(3)]),
+    )
+
+    o.fetch_and_archive_outlinks(
+        ["unused"], str(tmp_path), "site", threads=1, max_retries=0,
+    )
+
+    lines = (tmp_path / "site_outlinks_failed.txt").read_text().splitlines()
+    assert sorted(lines) == sorted(
+        f"https://web.archive.org/web/20000302202605id_/http://a.com/p{i}.html"
+        for i in range(3)
+    )
+
+
+def test_no_failures_leaves_no_file(tmp_path, monkeypatch):
+    """A run where everything succeeds does not create an empty failures file."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url="http://a.com/out.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x")
+        ]),
+    )
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    assert not (tmp_path / "site_outlinks_failed.txt").exists()
+
+
+def test_failures_file_only_lists_failures(tmp_path, monkeypatch):
+    """Successful downloads are not recorded in the failures file."""
+    links = {"http://a.com/ok.html": "20000302202605", "http://a.com/bad.html": "20000302202605"}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+    # _FakeSession consumes responses in order, and threads=1 keeps that order stable.
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([
+            _Resp(url="http://a.com/ok.html", status_code=200,
+                  headers={"Content-Type": "text/html"}, content=b"x"),
+            requests.RequestException("boom"),
+        ]),
+    )
+
+    o.fetch_and_archive_outlinks(
+        ["unused"], str(tmp_path), "site", threads=1, max_retries=0,
+    )
+
+    lines = (tmp_path / "site_outlinks_failed.txt").read_text().splitlines()
+    assert lines == ["https://web.archive.org/web/20000302202605id_/http://a.com/bad.html"]
+
+
+def test_failures_file_overwritten_on_rerun(tmp_path, monkeypatch):
+    """A re-run replaces the previous failures file rather than appending to it."""
+    stale = tmp_path / "site_outlinks_failed.txt"
+    stale.write_text("https://example.com/stale-entry\n")
+
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/bad.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([requests.RequestException("x")]),
+    )
+
+    o.fetch_and_archive_outlinks(
+        ["unused"], str(tmp_path), "site", threads=1, max_retries=0,
+    )
+
+    assert stale.read_text().splitlines() == [
+        "https://web.archive.org/web/20000302202605id_/http://a.com/bad.html"
+    ]
+

@@ -329,6 +329,10 @@ def fetch_and_archive_outlinks(
     Wayback Machine at the capture date of the referencing page, and writes the
     results to ``<output_dir>/<output_basename>_outlinks-XXXX.warc.gz``.
 
+    Requests that could not be completed are written, one Wayback request URL per
+    line, to ``<output_dir>/<output_basename>_outlinks_failed.txt``. That file is
+    only created if there is at least one failure, and is overwritten on a re-run.
+
     Downloads run concurrently across threads; the WARC writing itself is
     serialized, so the output is written from a single thread.
 
@@ -359,6 +363,11 @@ def fetch_and_archive_outlinks(
 
     output_filename = f"{output_basename}_outlinks"
     writer_state = _OutlinksWarcWriter(output_dir, output_filename, max_size_bytes)
+
+    # Opened on the first failure so a clean run leaves no empty file behind, and
+    # line-buffered so the list survives a run that is killed part-way through.
+    failures_path = os.path.join(output_dir, f"{output_filename}_failed.txt")
+    failures_file = None
 
     session = requests.Session()
     
@@ -394,6 +403,14 @@ def fetch_and_archive_outlinks(
                 url, timestamp, response = future.result()
                 if response is None:
                     failed += 1
+                    if failures_file is None:
+                        failures_file = open(failures_path, "w", encoding="utf-8", buffering=1)
+                        logger.info(f"Recording failed requests in: {failures_path}")
+                    # The full Wayback request URL, so the line is directly re-fetchable
+                    # and still carries both the original URL and its capture timestamp.
+                    failures_file.write(
+                        WAYBACK_RAW_URL.format(timestamp=timestamp, url=url) + "\n"
+                    )
                 else:
                     capture_ts = _actual_capture_timestamp(response, timestamp)
                     writer_state.write_resource(
@@ -423,6 +440,8 @@ def fetch_and_archive_outlinks(
     finally:
         writer_state.close()
         session.close()
+        if failures_file is not None:
+            failures_file.close()
 
     logger.info(
         f"\nOutlinks WARC summary for '{output_basename}':\n"
@@ -430,6 +449,7 @@ def fetch_and_archive_outlinks(
         f"  Links failed:       {failed}\n"
         f"  Total outgoing:     {len(outlinks)}\n"
         f"  WARC part files:    {writer_state.file_number}"
+        + (f"\n  Failed requests in: {failures_path}" if failed else "")
     )
 
 
