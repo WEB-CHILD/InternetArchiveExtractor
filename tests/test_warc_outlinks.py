@@ -103,12 +103,21 @@ def test_timestamp_to_warc_date_invalid_returns_none(bad):
 # _actual_capture_timestamp
 # --------------------------------------------------------------------------- #
 class _Resp:
-    def __init__(self, url="", status_code=200, reason="OK", headers=None, content=b""):
+    def __init__(self, url="", status_code=200, reason="OK", headers=None, content=b"",
+                 history=(), memento=True):
         self.url = url
         self.status_code = status_code
         self.reason = reason
-        self.headers = headers or {}
+        self.headers = dict(headers or {})
+        # Wayback sets Memento-Datetime on everything it replays from a real capture,
+        # so that is the default here. memento=False models a response Wayback
+        # generated itself (a "not archived" page or a replay-level redirect).
+        if memento:
+            self.headers.setdefault("Memento-Datetime", "Thu, 02 Mar 2000 20:26:05 GMT")
         self.content = content
+        # requests.Response always exposes .history; the redirect chain is empty
+        # for a response that was not redirected.
+        self.history = list(history)
 
 
 def test_actual_capture_timestamp_prefers_redirected_url():
@@ -600,4 +609,182 @@ def test_failures_file_overwritten_on_rerun(tmp_path, monkeypatch):
     assert stale.read_text().splitlines() == [
         "https://web.archive.org/web/20000302202605id_/http://a.com/bad.html"
     ]
+
+
+# --------------------------------------------------------------------------- #
+# redirect archiving
+# --------------------------------------------------------------------------- #
+def _wb(ts, url):
+    return f"https://web.archive.org/web/{ts}id_/{url}"
+
+
+def test_split_wayback_url():
+    """A Wayback replay URL splits into its timestamp and the archived URL."""
+    assert o._split_wayback_url(_wb("20000302202605", "http://a.com/x")) == (
+        "20000302202605", "http://a.com/x")
+
+
+@pytest.mark.parametrize("bad", ["", None, "http://a.com/x", "https://web.archive.org/about"])
+def test_split_wayback_url_non_wayback(bad):
+    """Anything that is not a Wayback replay URL splits to (None, None)."""
+    assert o._split_wayback_url(bad) == (None, None)
+
+
+def test_redirect_hops_yields_real_redirect():
+    """A redirect to a different archived URL is reported as an archivable hop."""
+    hop = _Resp(url=_wb("20000302202605", "http://a.com/old"), status_code=301,
+                reason="Moved Permanently",
+                headers={"Location": _wb("20000302202605", "http://a.com/new")})
+    final = _Resp(url=_wb("20000302202605", "http://a.com/new"), history=[hop])
+
+    hops = list(o._redirect_hops(final))
+    assert len(hops) == 1
+    url, status, reason, location, content, ts = hops[0]
+    assert (url, status, location, ts) == (
+        "http://a.com/old", 301, "http://a.com/new", "20000302202605")
+
+
+def test_redirect_hops_skips_temporal_redirect():
+    """A redirect to the same URL at a nearer snapshot is Wayback plumbing, not content."""
+    hop = _Resp(url=_wb("20000302202605", "http://a.com/x"), status_code=302, reason="Found",
+                headers={"Location": _wb("19991231120000", "http://a.com/x")}, memento=False)
+    final = _Resp(url=_wb("19991231120000", "http://a.com/x"), history=[hop])
+
+    assert list(o._redirect_hops(final)) == []
+
+
+def test_redirect_hops_resolves_relative_location():
+    """A relative Location header is resolved against the hop's own URL."""
+    hop = _Resp(url=_wb("20000302202605", "http://a.com/old"), status_code=302, reason="Found",
+                headers={"Location": "/web/20000302202605id_/http://a.com/new"})
+    final = _Resp(url=_wb("20000302202605", "http://a.com/new"), history=[hop])
+
+    assert list(o._redirect_hops(final))[0][3] == "http://a.com/new"
+
+
+def test_redirect_record_written_to_warc(tmp_path, monkeypatch):
+    """A followed redirect produces a 3xx record with its Location, plus the target's body."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/old": "20000302202605"},
+    )
+    hop = _Resp(url=_wb("20000302202605", "http://a.com/old"), status_code=301,
+                reason="Moved Permanently",
+                headers={"Location": _wb("20000302202605", "http://a.com/new")})
+    final = _Resp(url=_wb("20000302202605", "http://a.com/new"), status_code=200, reason="OK",
+                  headers={"Content-Type": "text/html"}, content=b"<html>new</html>",
+                  history=[hop])
+    monkeypatch.setattr(requests, "Session", lambda: _FakeSession([final]))
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
+    assert len(records) == 2
+    # The redirect is archived under the URL that issued it...
+    assert records[0][0] == "http://a.com/old"
+    # ...and the body is archived under the URL it actually came from.
+    assert records[1][0] == "http://a.com/new"
+    assert records[1][2] == b"<html>new</html>"
+
+
+def test_record_redirects_false_skips_redirect_records(tmp_path, monkeypatch):
+    """With record_redirects=False only the final resource is written."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/old": "20000302202605"},
+    )
+    hop = _Resp(url=_wb("20000302202605", "http://a.com/old"), status_code=301, reason="Moved",
+                headers={"Location": _wb("20000302202605", "http://a.com/new")})
+    final = _Resp(url=_wb("20000302202605", "http://a.com/new"), status_code=200, reason="OK",
+                  headers={"Content-Type": "text/html"}, content=b"<html>new</html>",
+                  history=[hop])
+    monkeypatch.setattr(requests, "Session", lambda: _FakeSession([final]))
+
+    o.fetch_and_archive_outlinks(
+        ["unused"], str(tmp_path), "site", threads=1, record_redirects=False,
+    )
+
+    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
+    assert [r[0] for r in records] == ["http://a.com/new"]
+
+
+def test_non_redirected_response_keeps_its_own_url(tmp_path, monkeypatch):
+    """A response with no redirect chain is still archived under the requested URL."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
+    )
+    final = _Resp(url=_wb("20000302202605", "http://a.com/out.html"), status_code=200,
+                  reason="OK", headers={"Content-Type": "text/html"}, content=b"x")
+    monkeypatch.setattr(requests, "Session", lambda: _FakeSession([final]))
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
+    assert [r[0] for r in records] == ["http://a.com/out.html"]
+
+
+# --------------------------------------------------------------------------- #
+# archived vs. not-archived responses
+# --------------------------------------------------------------------------- #
+def test_is_archived_capture():
+    """Memento-Datetime marks a response Wayback replayed from a real capture."""
+    assert o._is_archived_capture(_Resp(status_code=200)) is True
+    assert o._is_archived_capture(_Resp(status_code=200, memento=False)) is False
+
+
+def test_archived_404_is_written_to_warc(tmp_path, monkeypatch):
+    """A 404 the site really served at capture time is archived like any other capture."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/gone.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([_Resp(url=_wb("20000302202605", "http://a.com/gone.html"),
+                                    status_code=404, reason="Not Found",
+                                    headers={"Content-Type": "text/html"},
+                                    content=b"<html>gone</html>")]),
+    )
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
+    assert [(r[0], r[1]) for r in records] == [("http://a.com/gone.html", "404")]
+    assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
+
+
+def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
+    """A Wayback 'no capture' page is skipped and listed in the not-archived file."""
+    monkeypatch.setattr(
+        o, "collect_outlinks_from_warcs",
+        lambda paths, **kwargs: {"http://a.com/never.html": "20000302202605"},
+    )
+    monkeypatch.setattr(
+        requests, "Session",
+        lambda: _FakeSession([_Resp(url=_wb("20000302202605", "http://a.com/never.html"),
+                                    status_code=404, reason="Not Found",
+                                    headers={"Content-Type": "text/html"},
+                                    content=b"<html>Wayback Machine</html>",
+                                    memento=False)]),
+    )
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    assert _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz")) == []
+    assert (tmp_path / "site_outlinks_not_archived.txt").read_text().splitlines() == [
+        "https://web.archive.org/web/20000302202605id_/http://a.com/never.html"
+    ]
+    # An archive miss is not a request failure; the two lists stay separate.
+    assert not (tmp_path / "site_outlinks_failed.txt").exists()
+
+
+def test_replay_level_redirect_hop_is_not_archived():
+    """A hop Wayback generated itself (no Memento-Datetime) is not a historical redirect."""
+    # Same resource, differing only by the default ":80" Wayback canonicalises away.
+    hop = _Resp(url=_wb("20000302202605", "http://a.com:80/x"), status_code=302, reason="Found",
+                headers={"Location": _wb("20000302202605", "http://a.com/x")}, memento=False)
+    final = _Resp(url=_wb("20000302202605", "http://a.com/x"), history=[hop])
+
+    assert list(o._redirect_hops(final)) == []
 

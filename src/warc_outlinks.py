@@ -34,6 +34,11 @@ DEFAULT_USER_AGENT = "InternetArchiveExtractor/0.0.11 (+outlinks)"
 
 # Matches the 14-digit capture timestamp in a Wayback URL (e.g. /web/20000302202605/...).
 _WAYBACK_TS_RE = re.compile(r"/web/(\d{14})")
+# Splits a full Wayback replay URL into its timestamp and the archived URL it replays.
+# The optional modifier is Wayback's flag suffix ("id_", "if_", "cs_", ...).
+_WAYBACK_URL_RE = re.compile(
+    r"^https?://web\.archive\.org/web/(\d{14})(?:[a-z]{2}_)?/(.+)$", re.IGNORECASE
+)
 # Schemes that are not fetchable resources and should be ignored.
 _SKIP_SCHEMES = {"mailto", "javascript", "tel", "data", "ftp", "file"}
 
@@ -276,7 +281,7 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
                 allow_redirects=True,
             )
         except requests.RequestException as e:
-            logger.warning(f"{prefix}Request error for {request_url} (attempt {attempt + 1}): {e}")
+            logger.debug(f"{prefix}Request error for {request_url} (attempt {attempt + 1}): {e}")
             response = None
 
         # Back off and retry on throttling / transient server errors.
@@ -303,6 +308,102 @@ def _format_duration(seconds):
     return f"{secs}s"
 
 
+def _is_archived_capture(response):
+    """
+    True when Wayback is replaying a real capture rather than answering with its own
+    infrastructure.
+
+    Wayback sets ``Memento-Datetime`` only when it serves an actual snapshot. Without
+    it the response is present-day web.archive.org output -- a "not archived" error
+    page, or a replay-level redirect to the nearest capture -- and must never be
+    written into the WARC, where it would masquerade as historical web content.
+
+    Note this is deliberately independent of the status code: an archived 404 (the
+    site really did return 404 at capture time) carries Memento-Datetime and *is*
+    worth archiving, while a Wayback "no capture" 404 does not.
+    """
+    return bool(response.headers.get("Memento-Datetime"))
+
+
+class _UrlLog:
+    """A line-per-URL text file that is only created once it has something to record."""
+
+    def __init__(self, path, description):
+        self.path = path
+        self.description = description
+        self.count = 0
+        self._handle = None
+
+    def write(self, url):
+        if self._handle is None:
+            # Line-buffered so the list survives a run that is killed part-way through.
+            self._handle = open(self.path, "w", encoding="utf-8", buffering=1)
+            logger.info(f"Recording {self.description} in: {self.path}")
+        self._handle.write(url + "\n")
+        self.count += 1
+
+    def close(self):
+        if self._handle is not None:
+            self._handle.close()
+
+
+def _split_wayback_url(wayback_url):
+    """
+    Split a Wayback replay URL into ``(timestamp, archived_url)``.
+
+    Returns ``(None, None)`` for anything that is not a Wayback replay URL.
+    """
+    match = _WAYBACK_URL_RE.match(wayback_url or "")
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _redirect_hops(response):
+    """
+    Turn the redirect chain of a followed response into records worth archiving.
+
+    Wayback emits two very different 3xx responses. Replay-level redirects -- looking up
+    the nearest snapshot, or canonicalising a URL (dropping a default ":80", say) -- are
+    present-day infrastructure and are dropped. A redirect Wayback served from a real
+    capture is one the site itself issued at capture time, and is yielded here so it can
+    be written into the WARC. ``Memento-Datetime`` separates the two.
+
+    Yields:
+        tuple: ``(archived_url, status_code, reason, location, content, timestamp)``
+        for each real redirect hop, in the order they were followed.
+    """
+    for hop in response.history or ():
+        # Only a hop Wayback served from a real capture is a redirect the site itself
+        # issued. Replay-level hops (nearest-snapshot lookups, URL canonicalisation such
+        # as dropping a default ":80") carry no Memento-Datetime and are skipped.
+        if not _is_archived_capture(hop):
+            continue
+
+        hop_timestamp, hop_url = _split_wayback_url(hop.url)
+        if not hop_url:
+            continue
+
+        location = hop.headers.get("Location")
+        if not location:
+            continue
+
+        absolute = urljoin(hop.url, location)
+        _, target_url = _split_wayback_url(absolute)
+        # Defensive: a redirect back to the exact same archived URL is a snapshot change.
+        if target_url is not None and target_url == hop_url:
+            continue
+
+        yield (
+            hop_url,
+            hop.status_code,
+            hop.reason or "",
+            target_url or absolute,
+            hop.content or b"",
+            hop_timestamp,
+        )
+
+
 def _actual_capture_timestamp(response, requested_timestamp):
     """Prefer the real snapshot timestamp from the redirected URL, falling back to the requested one."""
     match = _WAYBACK_TS_RE.search(response.url or "")
@@ -314,9 +415,10 @@ def fetch_and_archive_outlinks(
     output_dir,
     output_basename,
     *,
-    threads=10,
+    threads=5,
     scan_workers=None,
     progress_every=1000,
+    record_redirects=True,
     timeout=5,
     max_retries=1,
     user_agent=DEFAULT_USER_AGENT,
@@ -333,6 +435,16 @@ def fetch_and_archive_outlinks(
     line, to ``<output_dir>/<output_basename>_outlinks_failed.txt``. That file is
     only created if there is at least one failure, and is overwritten on a re-run.
 
+    Redirects are followed, and each real redirect on the way is archived as its own
+    3xx record (carrying its Location header) so the chain is preserved; the final
+    body is stored under the URL it actually came from.
+
+    Only responses Wayback served from an actual capture are written. A link Wayback
+    has never captured answers with a present-day error page, which is skipped and
+    listed in ``<output_dir>/<output_basename>_outlinks_not_archived.txt`` instead.
+    Archived error responses -- a 404 the site really did serve at capture time -- are
+    real captures and are archived like any other resource.
+
     Downloads run concurrently across threads; the WARC writing itself is
     serialized, so the output is written from a single thread.
 
@@ -345,6 +457,8 @@ def fetch_and_archive_outlinks(
             files for outgoing links. Defaults to one per CPU core.
         progress_every (int): Emit an INFO progress summary every N completed downloads.
             Defaults to 1000. Set to 0 to report only at the end.
+        record_redirects (bool): Also write a record for each real redirect followed on
+            the way to a resource, so the redirect survives in the WARC. Defaults to True.
         timeout (int): Per-request timeout in seconds.
         max_retries (int): Retries on throttling / transient server errors.
         user_agent (str): User-Agent header sent with each request.
@@ -364,10 +478,13 @@ def fetch_and_archive_outlinks(
     output_filename = f"{output_basename}_outlinks"
     writer_state = _OutlinksWarcWriter(output_dir, output_filename, max_size_bytes)
 
-    # Opened on the first failure so a clean run leaves no empty file behind, and
-    # line-buffered so the list survives a run that is killed part-way through.
-    failures_path = os.path.join(output_dir, f"{output_filename}_failed.txt")
-    failures_file = None
+    failures_log = _UrlLog(
+        os.path.join(output_dir, f"{output_filename}_failed.txt"), "failed requests"
+    )
+    not_archived_log = _UrlLog(
+        os.path.join(output_dir, f"{output_filename}_not_archived.txt"),
+        "links with no Wayback capture",
+    )
 
     session = requests.Session()
     
@@ -389,6 +506,8 @@ def fetch_and_archive_outlinks(
     success = 0
     failed = 0
     completed = 0
+    redirects = 0
+    not_archived = 0
     started_at = time.monotonic()
     try:
         with ThreadPoolExecutor(max_workers=threads) as executor:
@@ -403,18 +522,39 @@ def fetch_and_archive_outlinks(
                 url, timestamp, response = future.result()
                 if response is None:
                     failed += 1
-                    if failures_file is None:
-                        failures_file = open(failures_path, "w", encoding="utf-8", buffering=1)
-                        logger.info(f"Recording failed requests in: {failures_path}")
                     # The full Wayback request URL, so the line is directly re-fetchable
                     # and still carries both the original URL and its capture timestamp.
-                    failures_file.write(
-                        WAYBACK_RAW_URL.format(timestamp=timestamp, url=url) + "\n"
-                    )
+                    failures_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
+                elif not _is_archived_capture(response):
+                    # Wayback has no capture for this link. Writing its error page would
+                    # put present-day web.archive.org HTML into the WARC as if the
+                    # historical site had served it.
+                    not_archived += 1
+                    not_archived_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
+                    logger.debug(f"No Wayback capture for {url}; not archived.")
                 else:
+                    if record_redirects:
+                        for (hop_url, hop_status, hop_reason, hop_location,
+                             hop_content, hop_timestamp) in _redirect_hops(response):
+                            writer_state.write_resource(
+                                url=hop_url,
+                                status_code=hop_status,
+                                reason=hop_reason,
+                                content_type="text/html",
+                                content=hop_content,
+                                warc_date=_timestamp_to_warc_date(hop_timestamp or timestamp),
+                                location=hop_location,
+                            )
+                            redirects += 1
+                            logger.debug(f"Archived redirect {hop_status}: {hop_url} -> {hop_location}")
+
                     capture_ts = _actual_capture_timestamp(response, timestamp)
+                    # Record the body under the URL it actually came from. Following a
+                    # real redirect means the content belongs to the target, not to the
+                    # URL originally requested.
+                    _, final_url = _split_wayback_url(response.url)
                     writer_state.write_resource(
-                        url=url,
+                        url=final_url or url,
                         status_code=response.status_code,
                         reason=response.reason or "",
                         content_type=response.headers.get("Content-Type", "application/octet-stream"),
@@ -433,23 +573,26 @@ def fetch_and_archive_outlinks(
                     logger.info(
                         f"Outlink progress for '{output_basename}': "
                         f"{completed}/{total} ({100 * completed / total:.1f}%) - "
-                        f"{success} ok, {failed} failed - "
+                        f"{success} ok, {failed} failed, {not_archived} not archived - "
                         f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, "
                         f"ETA {_format_duration(eta)}"
                     )
     finally:
         writer_state.close()
         session.close()
-        if failures_file is not None:
-            failures_file.close()
+        failures_log.close()
+        not_archived_log.close()
 
     logger.info(
         f"\nOutlinks WARC summary for '{output_basename}':\n"
         f"  Links downloaded:   {success}\n"
         f"  Links failed:       {failed}\n"
+        f"  Not archived:       {not_archived}\n"
         f"  Total outgoing:     {len(outlinks)}\n"
+        f"  Redirects archived: {redirects}\n"
         f"  WARC part files:    {writer_state.file_number}"
-        + (f"\n  Failed requests in: {failures_path}" if failed else "")
+        + (f"\n  Failed requests in: {failures_log.path}" if failures_log.count else "")
+        + (f"\n  Not archived in:    {not_archived_log.path}" if not_archived_log.count else "")
     )
 
 
@@ -476,7 +619,8 @@ class _OutlinksWarcWriter:
         self.stream = open(self.warc_path, "wb")
         self.writer = WARCWriter(self.stream, gzip=True)
 
-    def write_resource(self, url, status_code, reason, content_type, content, warc_date):
+    def write_resource(self, url, status_code, reason, content_type, content, warc_date,
+                       location=None):
         if self.current_size >= self.max_size_bytes:
             self.stream.close()
             logger.info(
@@ -487,9 +631,13 @@ class _OutlinksWarcWriter:
             self.current_size = 0
             self._open_new_file()
 
+        headers = [("Content-Type", content_type)]
+        if location:
+            # Without Location a 3xx record is unusable on replay.
+            headers.append(("Location", location))
         http_headers = StatusAndHeaders(
             f"{status_code} {reason}".strip(),
-            [("Content-Type", content_type)],
+            headers,
             protocol="HTTP/1.0",
         )
         record = self.writer.create_warc_record(
