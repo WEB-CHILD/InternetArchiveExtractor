@@ -228,6 +228,124 @@ def test_collect_outlinks_parallel_keeps_earliest_timestamp(tmp_path, warc_bytes
         "http://a.com/shared.html"] == "20000101000000"
 
 
+# --------------------------------------------------------------------------- #
+# TLD exclusion
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("given,expected", [
+    ([".dk", ".com"], (".dk", ".com")),
+    (["dk", "com"], (".dk", ".com")),
+    ([".DK", " .Com "], (".dk", ".com")),
+    ([".co.uk"], (".co.uk",)),
+    ([".dk", "dk", ".DK."], (".dk",)),
+    (["", "  ", "."], ()),
+    (None, ()),
+])
+def test_normalize_excluded_tlds(given, expected):
+    """The leading dot is optional, case and whitespace are ignored, duplicates drop out."""
+    assert o.normalize_excluded_tlds(given) == expected
+
+
+@pytest.mark.parametrize("url,excluded", [
+    ("http://example.dk/x", True),
+    ("http://example.dk:8080/x", True),
+    ("http://user:pw@example.dk/x", True),
+    ("http://EXAMPLE.DK/x", True),
+    ("http://example.dk./x", True),          # root-labelled host
+    ("http://sub.example.dk/x", True),
+    ("http://example.dk", True),             # no path at all
+    ("http://example.com/x", False),
+    ("http://example.dk.com/x", False),      # ".dk" only mid-host
+    ("http://notdk/x", False),               # suffix must follow a dot
+    ("http://dk/x", False),                  # the TLD alone is not a host under it
+    ("http://192.168.0.1/x", False),
+    ("http://[2001:db8::1]/x", False),       # IPv6 literal has no TLD
+    ("not a url", False),
+])
+def test_host_is_excluded(url, excluded):
+    """Ports, userinfo, case and a trailing root dot must not defeat the match."""
+    assert o._host_is_excluded(url, (".dk",)) is excluded
+
+
+def test_host_is_excluded_matches_urlsplit():
+    """The fast authority parser must agree with urlsplit on realistic URLs."""
+    from urllib.parse import urlsplit
+    suffixes = (".dk", ".com", ".co.uk")
+    urls = [
+        "http://example.dk/a/b?c=1#d", "https://a.b.example.co.uk/x", "http://x.com:81/",
+        "http://u@x.com/", "http://u:p@x.com:81/y", "http://EXAMPLE.DK", "http://x.dk.",
+        "http://x.org/", "https://[::1]:8080/x", "http://192.168.0.1/", "http://x.comic/",
+    ]
+    for url in urls:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+        expected = bool(host) and host.endswith(suffixes)
+        assert o._host_is_excluded(url, suffixes) is expected, url
+
+
+def test_scan_warc_for_outlinks_excludes_tlds(tmp_path, warc_bytes_factory):
+    """Excluded links are dropped in the worker and counted, not returned."""
+    html = (b'<a href="http://keep.org/a">a</a>'
+            b'<a href="http://drop.dk/b">b</a>'
+            b'<a href="http://drop.com/c">c</a>')
+    path = tmp_path / "s.warc.gz"
+    path.write_bytes(warc_bytes_factory(
+        [("http://src.org/", "2000-03-02T20:26:05Z", "text/html", html)]))
+
+    outlinks, known, excluded = o.scan_warc_for_outlinks(str(path), (".dk", ".com"))
+
+    assert set(outlinks) == {"http://keep.org/a"}
+    assert known == {"http://src.org/"}
+    assert excluded == 2
+
+
+def test_collect_outlinks_from_warcs_excludes_tlds(tmp_path, warc_bytes_factory):
+    """Exclusion applies the same way through the parallel and serial scan paths."""
+    html = b'<a href="http://keep.org/a">a</a><a href="http://drop.dk/b">b</a>'
+    paths = []
+    for i in range(3):
+        path = tmp_path / f"s{i}.warc.gz"
+        path.write_bytes(warc_bytes_factory(
+            [(f"http://src{i}.org/", "2000-03-02T20:26:05Z", "text/html", html)]))
+        paths.append(str(path))
+
+    serial = o.collect_outlinks_from_warcs(paths, scan_workers=1, excluded_tlds=(".dk",))
+    parallel = o.collect_outlinks_from_warcs(paths, scan_workers=3, excluded_tlds=(".dk",))
+
+    assert serial == parallel == {"http://keep.org/a": "20000302202605"}
+    # Without the flag the .dk link is kept, so the filter is what removed it.
+    assert "http://drop.dk/b" in o.collect_outlinks_from_warcs(paths, scan_workers=1)
+
+
+def test_excluded_links_are_never_downloaded(tmp_path, monkeypatch, warc_bytes_factory):
+    """An excluded link must not reach the download step at all."""
+    html = b'<a href="http://keep.org/a">a</a><a href="http://drop.dk/b">b</a>'
+    path = tmp_path / "s.warc.gz"
+    path.write_bytes(warc_bytes_factory(
+        [("http://src.org/", "2000-03-02T20:26:05Z", "text/html", html)]))
+
+    requested = []
+
+    class _RecordingSession:
+        def get(self, url, **kwargs):
+            requested.append(url)
+            return _Resp(url=url, headers={"Content-Type": "text/html"}, content=b"x")
+
+        def mount(self, prefix, adapter):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, "Session", _RecordingSession)
+
+    o.fetch_and_archive_outlinks([str(path)], str(tmp_path), "site", threads=1,
+                                 scan_workers=1, excluded_tlds=(".dk",))
+
+    assert len(requested) == 1
+    assert "http://keep.org/a" in requested[0]
+    assert not any("drop.dk" in url for url in requested)
+
+
 def test_scan_warc_for_outlinks_returns_links_and_known_urls(tmp_path, warc_bytes_factory):
     """The per-file worker reports its own links and every URL captured in that file."""
     path = tmp_path / "src-0001.warc.gz"
@@ -236,7 +354,8 @@ def test_scan_warc_for_outlinks_returns_links_and_known_urls(tmp_path, warc_byte
           b'<a href="http://b.com/out.html">x</a>')]
     ))
 
-    outlinks, known = o.scan_warc_for_outlinks(str(path))
+    outlinks, known, excluded = o.scan_warc_for_outlinks(str(path))
+    assert excluded == 0
 
     # The worker does NOT apply the self-link exclusion; that happens after the merge.
     assert outlinks == {"http://b.com/out.html": "20000302202605"}

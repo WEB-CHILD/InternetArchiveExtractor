@@ -34,10 +34,10 @@ Usage pattern for the main runner (`src/main.py`):
 
 ```bash
 # Download mode
-python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks]
+python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks] [--exclude-tld TLD ...]
 
 # Download mode, outgoing links from existing WARCS only (no <input> needed)
-python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N]
+python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N] [--exclude-tld TLD ...]
 
 # Convert mode
 python src/main.py convert <input> --output OUTPUT [--warc-output FOLDER]
@@ -78,6 +78,7 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--no-outlinks` — If present, skips the step that downloads and archives the outgoing links found in the created WARC files
 - `--outlinks-only` — If present, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already on disk (see below)
 - `--scan-workers` — Number of processes used to scan WARC files for outgoing links (default: one per CPU core). Scanning is CPU-bound HTML parsing, so this is parallelised across processes; use `1` to scan in a single process
+- `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `--exclude-tld .dk .com` (see below)
 
 **Example with CUSTOM period**:
 
@@ -105,6 +106,19 @@ WARC part files (`<name>-0001.warc.gz`, `<name>-0002.warc.gz`, …) are grouped 
 
 **`input` is not required** in this mode, and `--outlinks-only` cannot be combined with `--no-outlinks`.
 
+### Excluding top-level domains
+
+`--exclude-tld` skips outgoing links whose host sits under one of the given top-level domains. It applies to both the full `download` run and `--outlinks-only`.
+
+```bash
+python src/main.py download --outlinks-only --exclude-tld .dk .com
+```
+
+The leading dot is optional (`.dk` and `dk` are the same) and matching is case-insensitive. Multi-label suffixes work as written: `.co.uk` excludes only that, while `.uk` excludes all of it. The flag can be repeated, and ports, userinfo and a trailing root dot do not defeat the match — `http://user@Example.DK.:80/x` is excluded by `.dk`. A suffix only matches on a label boundary, so `.dk` does not exclude `example.dk.com` or `notdk`.
+
+Excluded links are dropped during the scan, so they are never downloaded, never counted, and never cross into the download step. The saving can be large: on three real WARC files holding 141,034 outgoing links, `--exclude-tld .dk .com` left 6,846 — a 95% reduction — while adding about 1% to scan time.
+
+
 **Example**:
 
 ```bash
@@ -121,6 +135,7 @@ python src/main.py download --outlinks-only --warc-output /data/warcs --workers 
 - `--warc-output` — Folder that is scanned for existing WARC files (default: `./output`)
 - `--workers` — Number of concurrent download threads used to fetch the outgoing links (default: `5`)
 - `--scan-workers` — Number of processes used to scan the WARC files (default: one per CPU core)
+- `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `.dk .com`
 
 **A note on performance**: the scan phase is CPU-bound HTML parsing, not I/O — on a 9.7 GB set of 19 WARC files it is over 99% HTML parsing and under 1% disk reads. It is therefore parallelised across processes (threads would be serialised by the GIL) and uses `selectolax` rather than Python's `html.parser`. Together these took that 9.7 GB scan from roughly 20 minutes to about 1 minute.
 

@@ -150,7 +150,56 @@ def _timestamp_to_warc_date(timestamp):
         return None
 
 
-def scan_warc_for_outlinks(warc_path):
+# The authority of an absolute http(s) URL, i.e. everything between "://" and the
+# first "/", "?" or "#". Cheaper than urlsplit(), which matters because this runs
+# once per link found and a real run finds millions of them.
+_AUTHORITY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://([^/?#]*)")
+
+
+def normalize_excluded_tlds(tlds):
+    """
+    Turn command-line style top-level domains into matchable host suffixes.
+
+    Accepts them with or without the leading dot and in any case (".DK", "dk"),
+    and multi-label suffixes work too (".co.uk" excludes only that, ".uk" excludes
+    all of it). Order is preserved and duplicates dropped.
+
+    Args:
+        tlds (iterable[str] | None): Raw values as given on the command line.
+
+    Returns:
+        tuple[str]: Lowercase, dot-prefixed suffixes suitable for str.endswith().
+    """
+    suffixes = []
+    for tld in tlds or ():
+        cleaned = tld.strip().lower().strip(".")
+        if not cleaned:
+            continue
+        suffix = "." + cleaned
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    return tuple(suffixes)
+
+
+def _host_is_excluded(url, excluded_tlds):
+    """
+    True when the URL's host sits under one of the excluded top-level domains.
+
+    The port, any userinfo and a trailing root dot are ignored, so
+    "http://User@Example.DK.:80/x" is matched by ".dk". IPv6 literals have no TLD
+    and are never excluded.
+    """
+    match = _AUTHORITY_RE.match(url)
+    if not match:
+        return False
+    host = match.group(1).rpartition("@")[2]
+    if host.startswith("["):
+        return False
+    host = host.partition(":")[0].rstrip(".").lower()
+    return bool(host) and host.endswith(excluded_tlds)
+
+
+def scan_warc_for_outlinks(warc_path, excluded_tlds=()):
     """
     Scan a single WARC file for outgoing links.
 
@@ -159,14 +208,19 @@ def scan_warc_for_outlinks(warc_path):
 
     Args:
         warc_path (str): The WARC file to scan.
+        excluded_tlds (tuple[str]): Host suffixes to skip, from
+            normalize_excluded_tlds(). Filtering here rather than in the caller keeps
+            the excluded links from crossing the process boundary at all.
 
     Returns:
-        tuple[dict, set]: ``(outlinks, known_urls)`` where ``outlinks`` maps
-        ``absolute_url -> wayback_timestamp`` in document order for this file, and
-        ``known_urls`` is every URL captured in this file.
+        tuple[dict, set, int]: ``(outlinks, known_urls, excluded)`` where ``outlinks``
+        maps ``absolute_url -> wayback_timestamp`` in document order for this file,
+        ``known_urls`` is every URL captured in this file, and ``excluded`` counts the
+        links dropped by ``excluded_tlds``.
     """
     outlinks = {}
     known_urls = set()
+    excluded = 0
 
     with open(warc_path, "rb") as stream:
         for record in ArchiveIterator(stream):
@@ -196,12 +250,17 @@ def scan_warc_for_outlinks(warc_path):
 
             for link in extract_outgoing_links(payload, target_uri):
                 # Keep the first (earliest-seen) timestamp for each unique URL.
-                outlinks.setdefault(link, timestamp)
+                if link in outlinks:
+                    continue
+                if excluded_tlds and _host_is_excluded(link, excluded_tlds):
+                    excluded += 1
+                    continue
+                outlinks[link] = timestamp
 
-    return outlinks, known_urls
+    return outlinks, known_urls, excluded
 
 
-def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
+def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None, excluded_tlds=()):
     """
     Walk through the given WARC files and gather every outgoing link found in the
     archived HTML pages.
@@ -215,6 +274,8 @@ def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
         source_warc_paths (list[str]): WARC files to scan.
         scan_workers (int, optional): Number of scan processes. Defaults to one per
             CPU core, capped at the number of files. 1 scans in the current process.
+        excluded_tlds (tuple[str]): Host suffixes whose links are dropped, from
+            normalize_excluded_tlds(). Empty means keep everything.
 
     Returns:
         dict: ``absolute_url -> wayback_timestamp`` (the capture date of the page that
@@ -232,7 +293,7 @@ def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
         results = []
         for warc_path in source_warc_paths:
             logger.debug(f"Scanning for outgoing links: {warc_path}")
-            results.append(scan_warc_for_outlinks(warc_path))
+            results.append(scan_warc_for_outlinks(warc_path, excluded_tlds))
     else:
         logger.info(
             f"Scanning {len(source_warc_paths)} WARC file(s) across {scan_workers} process(es)..."
@@ -241,17 +302,28 @@ def collect_outlinks_from_warcs(source_warc_paths, scan_workers=None):
             # Mapping in submission order keeps the merge deterministic and identical
             # to a serial scan, which as_completed() would not.
             futures = [
-                executor.submit(scan_warc_for_outlinks, path) for path in source_warc_paths
+                executor.submit(scan_warc_for_outlinks, path, excluded_tlds)
+                for path in source_warc_paths
             ]
             results = []
             for warc_path, future in zip(source_warc_paths, futures):
                 results.append(future.result())
                 logger.debug(f"Finished scanning: {warc_path}")
 
-    for file_outlinks, file_known_urls in results:
+    excluded = 0
+    for file_outlinks, file_known_urls, file_excluded in results:
         known_urls |= file_known_urls
+        excluded += file_excluded
         for link, timestamp in file_outlinks.items():
             outlinks.setdefault(link, timestamp)
+
+    if excluded_tlds:
+        logger.info(
+            # Counted per file, so a link excluded in several files counts several
+            # times; it is a volume indicator, not a unique-URL total.
+            f"Excluded {excluded} outgoing link reference(s) "
+            f"matching {', '.join(excluded_tlds)}."
+        )
 
     # Don't re-fetch pages that are already present in the source archive.
     for url in known_urls:
@@ -419,6 +491,7 @@ def fetch_and_archive_outlinks(
     *,
     threads=5,
     scan_workers=None,
+    excluded_tlds=(),
     progress_every=1000,
     record_redirects=True,
     timeout=5,
@@ -457,6 +530,8 @@ def fetch_and_archive_outlinks(
         threads (int): Number of concurrent download threads. Defaults to 5 (matching main.py).
         scan_workers (int, optional): Number of processes used to scan the source WARC
             files for outgoing links. Defaults to one per CPU core.
+        excluded_tlds (tuple[str]): Host suffixes whose links are skipped entirely,
+            from normalize_excluded_tlds(). Empty means archive every outgoing link.
         progress_every (int): Emit an INFO progress summary every N completed downloads.
             Defaults to 1000. Set to 0 to report only at the end.
         record_redirects (bool): Also write a record for each real redirect followed on
@@ -466,7 +541,9 @@ def fetch_and_archive_outlinks(
         user_agent (str): User-Agent header sent with each request.
         max_size_bytes (int): Size threshold at which a new WARC part file is started.
     """
-    outlinks = collect_outlinks_from_warcs(source_warc_paths, scan_workers=scan_workers)
+    outlinks = collect_outlinks_from_warcs(
+        source_warc_paths, scan_workers=scan_workers, excluded_tlds=excluded_tlds
+    )
     if not outlinks:
         logger.info(f"No outgoing links found for '{output_basename}'. Skipping outlinks WARC.")
         return
