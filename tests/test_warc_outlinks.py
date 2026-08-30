@@ -5,6 +5,8 @@ from io import BytesIO
 import gc
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+import inspect
+import logging
 from urllib.parse import unquote
 
 import pytest
@@ -903,6 +905,135 @@ def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Robustness: one bad link must not abort the run
 # --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# Retry policy
+# --------------------------------------------------------------------------- #
+
+def _sleeps(monkeypatch):
+    """Record every backoff sleep instead of performing it."""
+    recorded = []
+    monkeypatch.setattr(o.time, "sleep", lambda seconds: recorded.append(seconds))
+    return recorded
+
+
+@pytest.mark.parametrize("status", [404, 403, 200, 301])
+def test_archive_answers_are_never_retried(monkeypatch, status):
+    """Anything Wayback actually served is final -- a miss must not cost a backoff."""
+    recorded = _sleeps(monkeypatch)
+    session = _FakeSession([_Resp(status_code=status, memento=False)])
+
+    response = o._download_archived_resource(
+        "http://a.com/x", "20000302202605", session, "ua", 20, 3)
+
+    assert response.status_code == status
+    assert session.calls == 1
+    assert recorded == []
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_throttling_and_server_errors_are_retried(monkeypatch, status):
+    """Throttling and server errors are transient and worth another attempt."""
+    recorded = _sleeps(monkeypatch)
+    session = _FakeSession([_Resp(status_code=status) for _ in range(4)])
+
+    assert o._download_archived_resource(
+        "http://a.com/x", "20000302202605", session, "ua", 20, 3) is None
+    assert session.calls == 4                 # first attempt plus three retries
+    assert recorded == [1, 2, 4]              # exponential backoff
+
+
+def test_retry_succeeds_after_a_transient_failure(monkeypatch):
+    """A capture behind one 503 is kept rather than discarded."""
+    _sleeps(monkeypatch)
+    session = _FakeSession([
+        _Resp(status_code=503),
+        _Resp(status_code=200, content=b"real capture"),
+    ])
+
+    response = o._download_archived_resource(
+        "http://a.com/x", "20000302202605", session, "ua", 20, 3)
+
+    assert response.content == b"real capture"
+    assert session.calls == 2
+
+
+def test_transport_errors_are_retried(monkeypatch):
+    """A read timeout is transport failure, not an answer; archive.org's tail is long."""
+    _sleeps(monkeypatch)
+    session = _FakeSession([
+        requests.ReadTimeout("too slow"),
+        _Resp(status_code=200, content=b"arrived"),
+    ])
+
+    response = o._download_archived_resource(
+        "http://a.com/x", "20000302202605", session, "ua", 20, 3)
+
+    assert response.content == b"arrived"
+
+
+def test_retry_after_seconds_header_is_honoured(monkeypatch):
+    """A numeric Retry-After overrides our own backoff when it asks for longer."""
+    recorded = _sleeps(monkeypatch)
+    session = _FakeSession([
+        _Resp(status_code=429, headers={"Retry-After": "30"}) for _ in range(2)
+    ])
+
+    o._download_archived_resource("http://a.com/x", "20000302202605", session, "ua", 20, 1)
+
+    assert recorded == [30]
+
+
+def test_retry_after_http_date_is_honoured(monkeypatch):
+    """Retry-After may be an HTTP date rather than a delay."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=25)
+    response = _Resp(status_code=429, headers={"Retry-After": format_datetime(when)})
+
+    assert 20 <= o._retry_after_seconds(response, 1) <= 30
+
+
+@pytest.mark.parametrize("header,expected", [
+    ("2", 4),            # shorter than our own backoff: keep the backoff
+    ("9999", 60),        # absurd: capped so one thread cannot stall the run
+    ("not-a-date", 4),   # unparseable: fall back
+    (None, 4),           # absent
+])
+def test_retry_after_bounds(header, expected):
+    """Retry-After is a floor on our backoff and is capped at MAX_RETRY_WAIT_SECONDS."""
+    response = _Resp(status_code=429, headers={"Retry-After": header} if header else None)
+    assert o._retry_after_seconds(response, 4) == expected
+
+
+def test_retry_after_on_a_failed_request():
+    """With no response at all the caller's own backoff is used."""
+    assert o._retry_after_seconds(None, 8) == 8
+
+
+def test_retry_is_logged_at_debug_not_info(monkeypatch, caplog):
+    """Retries are routine under load and must not bury the INFO progress lines."""
+    _sleeps(monkeypatch)
+    session = _FakeSession([_Resp(status_code=503) for _ in range(2)])
+
+    with caplog.at_level(logging.DEBUG, logger="warc_outlinks"):
+        o._download_archived_resource(
+            "http://a.com/x", "20000302202605", session, "ua", 20, 1)
+
+    retry_records = [r for r in caplog.records if "Retrying" in r.getMessage()]
+    assert retry_records, "the retry should still be logged"
+    assert all(r.levelno == logging.DEBUG for r in retry_records)
+
+
+def test_download_defaults_are_generous_enough_for_the_archive():
+    """The defaults are the point of this policy, so pin them."""
+    assert o.DEFAULT_TIMEOUT_SECONDS >= 20
+    assert o.DEFAULT_MAX_RETRIES >= 3
+    signature = inspect.signature(o.fetch_and_archive_outlinks).parameters
+    assert signature["timeout"].default == o.DEFAULT_TIMEOUT_SECONDS
+    assert signature["max_retries"].default == o.DEFAULT_MAX_RETRIES
+
 
 @pytest.fixture
 def latin1_redirect_server():

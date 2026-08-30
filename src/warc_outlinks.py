@@ -13,7 +13,8 @@ import os
 import re
 import time
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin
 from concurrent.futures import (
     ThreadPoolExecutor, ProcessPoolExecutor, wait, FIRST_COMPLETED,
@@ -33,6 +34,15 @@ logger = get_logger(__name__)
 # Wayback "id_" modifier returns the raw archived resource without rewriting or toolbar.
 WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{url}"
 DEFAULT_USER_AGENT = "InternetArchiveExtractor/0.0.11 (+outlinks)"
+
+# archive.org's tail latency is long -- a sampled capture set had a median of
+# 2.5s but a 25s maximum, and its captures routinely redirect 3-6 times with each
+# hop paying the timeout separately. A short timeout does not skip misses faster
+# (those answer immediately); it just discards resources that do exist.
+DEFAULT_TIMEOUT_SECONDS = 20
+DEFAULT_MAX_RETRIES = 3
+# Cap on an honoured Retry-After, so a large value cannot stall a whole thread.
+MAX_RETRY_WAIT_SECONDS = 60
 
 # Matches the 14-digit capture timestamp in a Wayback URL (e.g. /web/20000302202605/...).
 _WAYBACK_TS_RE = re.compile(r"/web/(\d{14})")
@@ -360,12 +370,43 @@ def _tolerate_undecodable_redirects(session):
     session.get_redirect_target = get_redirect_target
 
 
+def _retry_after_seconds(response, fallback):
+    """
+    How long a throttled response asks us to wait, in seconds.
+
+    Wayback answers a 429 with a Retry-After header giving either a delay in seconds
+    or an HTTP date. Honouring it is the difference between backing off and being
+    blocked outright, so the header wins over our own backoff whenever it is longer.
+    """
+    if response is None:
+        return fallback
+    header = response.headers.get("Retry-After")
+    if not header:
+        return fallback
+    header = header.strip()
+    if header.isdigit():
+        wait = int(header)
+    else:
+        try:
+            wait = (parsedate_to_datetime(header) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            return fallback
+    # Never shorter than our own backoff, and never long enough to stall the run.
+    return max(fallback, min(wait, MAX_RETRY_WAIT_SECONDS))
+
+
 def _download_archived_resource(url, timestamp, session, user_agent, timeout, max_retries, progress=""):
     """
     Fetch a single resource from the Wayback Machine at the given capture date.
 
     Returns the ``requests.Response`` (after following redirects to the nearest
     snapshot) or ``None`` if the request could not be completed.
+
+    A response Wayback served -- including a 404 for a URL it has no capture of --
+    is returned on the first attempt. Only throttling (429), server errors (5xx) and
+    transport failures are retried, with exponential backoff; archive.org's tail
+    latency is long and its captures redirect several times, so giving up early
+    discards resources that do exist.
 
     ``progress`` is an "n/total" label identifying this link's position in the
     submitted work; it is prefixed to every log line so that interleaved output from
@@ -390,12 +431,19 @@ def _download_archived_resource(url, timestamp, session, user_agent, timeout, ma
             logger.debug(f"{prefix}Request error for {request_url} (attempt {attempt + 1}): {e}")
             response = None
 
-        # Back off and retry on throttling / transient server errors.
-        if response is not None and response.status_code not in (429,) and response.status_code < 500:
+        # Anything Wayback actually answered is the answer, retries included: a 404
+        # for a URL it never captured is final, not a transient failure.
+        if response is not None and response.status_code != 429 and response.status_code < 500:
             return response
         if attempt < max_retries:
-            logger.info(f"{prefix}Retrying {request_url} after {2 ** attempt} seconds (attempt {attempt + 1})...")
-            time.sleep(2 ** attempt)
+            wait = _retry_after_seconds(response, 2 ** attempt)
+            # DEBUG, not INFO: on a large run under load these are routine and
+            # would otherwise bury the progress lines.
+            logger.debug(
+                f"{prefix}Retrying {request_url} after {wait:g} seconds "
+                f"(attempt {attempt + 1} of {max_retries + 1})..."
+            )
+            time.sleep(wait)
 
     # Retries exhausted: a final throttled/5xx response is a failure, not a
     # resource worth archiving, so don't write it into the outlinks WARC.
@@ -526,8 +574,8 @@ def fetch_and_archive_outlinks(
     excluded_tlds=(),
     progress_every=1000,
     record_redirects=True,
-    timeout=5,
-    max_retries=1,
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    max_retries=DEFAULT_MAX_RETRIES,
     user_agent=DEFAULT_USER_AGENT,
     max_size_bytes=1073741824,
 ):
@@ -568,8 +616,10 @@ def fetch_and_archive_outlinks(
             Defaults to 1000. Set to 0 to report only at the end.
         record_redirects (bool): Also write a record for each real redirect followed on
             the way to a resource, so the redirect survives in the WARC. Defaults to True.
-        timeout (int): Per-request timeout in seconds.
-        max_retries (int): Retries on throttling / transient server errors.
+        timeout (int): Per-request timeout in seconds, applied to each hop of a
+            redirect chain separately. Defaults to DEFAULT_TIMEOUT_SECONDS.
+        max_retries (int): Extra attempts on throttling / server errors / transport
+            failures. Defaults to DEFAULT_MAX_RETRIES.
         user_agent (str): User-Agent header sent with each request.
         max_size_bytes (int): Size threshold at which a new WARC part file is started.
     """

@@ -34,10 +34,10 @@ Usage pattern for the main runner (`src/main.py`):
 
 ```bash
 # Download mode
-python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks] [--exclude-tld TLD ...]
+python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks] [--exclude-tld TLD ...] [--timeout N] [--max-retries N]
 
 # Download mode, outgoing links from existing WARCS only (no <input> needed)
-python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N] [--exclude-tld TLD ...]
+python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N] [--exclude-tld TLD ...] [--timeout N] [--max-retries N]
 
 # Convert mode
 python src/main.py convert <input> --output OUTPUT [--warc-output FOLDER]
@@ -79,6 +79,8 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--outlinks-only` — If present, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already on disk (see below)
 - `--scan-workers` — Number of processes used to scan WARC files for outgoing links (default: one per CPU core). Scanning is CPU-bound HTML parsing, so this is parallelised across processes; use `1` to scan in a single process
 - `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `--exclude-tld .dk .com` (see below)
+- `--timeout` — Per-request timeout in seconds when fetching outgoing links (default: `20`)
+- `--max-retries` — Extra attempts when the archive throttles or errors (default: `3`)
 
 **Example with CUSTOM period**:
 
@@ -101,6 +103,12 @@ Redirects are followed and preserved: each redirect the archived site actually s
 Only responses the Wayback Machine served from a **real capture** are archived, which it signals with a `Memento-Datetime` header. This is independent of status code: an archived 404 or 403 — one the site genuinely served at capture time — is a real capture and is written to the WARC. A link Wayback has simply never captured answers with a present-day web.archive.org error page (~4.8 KB of `<title>Wayback Machine</title>` HTML); those are skipped so they cannot masquerade as historical web content. Misses are not listed individually — they are only counted in the run summary. On real 1990s link sets the miss rate can exceed 70%, so this matters for both WARC size and archival accuracy.
 
 A redirect whose `Location` header carries raw 8-bit bytes — routine in 1990s national-language URLs, where Danish `å` is the single byte `0xe5` — makes `requests` raise a `UnicodeDecodeError` from inside its own redirect handling. That is not a `RequestException`, so left uncaught it aborts an entire run over one link. The session falls back to reading such a `Location` as latin-1 and follows the redirect; if the archive only holds the target under a different escaping, it comes back as an ordinary miss rather than a crash. More generally, no single link can end a run: an unexpected error while handling one result is logged, counted as a failure, and the run continues.
+
+### Retries and timeouts
+
+A response the archive actually served is final and is never retried — including a 404 for a URL it has no capture of, which returns on the first attempt with no backoff. Only throttling (`429`), server errors (`5xx`) and transport failures are retried, with exponential backoff that honours a `Retry-After` header (capped at 60 s so one thread cannot stall).
+
+The defaults are deliberately generous: `--timeout 20` and `--max-retries 3`. Archive.org's tail latency is long — a sampled set of captures had a median response of 2.5 s but a maximum of 25 s, and its captures routinely redirect 3–6 times with each hop paying the timeout separately. A short timeout does **not** skip misses faster, since misses answer immediately; it only discards resources that do exist. On one real run a 5 s timeout with a single retry threw away 175 links, of which a re-fetch found 11 out of 12 sampled to be genuine captures.
 
 Any request that could not be completed is recorded in `<name>_outlinks_failed.txt`, one Wayback request URL per line (e.g. `https://web.archive.org/web/20000302202605id_/http://example.com/page`). Each line is directly re-fetchable and still carries both the original URL and its capture timestamp. The file is written next to the outlinks WARC, is only created when there is at least one failure, and is overwritten on a re-run.
 
@@ -138,6 +146,8 @@ python src/main.py download --outlinks-only --warc-output /data/warcs --workers 
 - `--workers` — Number of concurrent download threads used to fetch the outgoing links (default: `5`)
 - `--scan-workers` — Number of processes used to scan the WARC files (default: one per CPU core)
 - `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `.dk .com`
+- `--timeout` — Per-request timeout in seconds (default: `20`)
+- `--max-retries` — Extra attempts when the archive throttles or errors (default: `3`)
 
 **A note on performance**: the scan phase is CPU-bound HTML parsing, not I/O — on a 9.7 GB set of 19 WARC files it is over 99% HTML parsing and under 1% disk reads. It is therefore parallelised across processes (threads would be serialised by the GIL) and uses `selectolax` rather than Python's `html.parser`. Together these took that 9.7 GB scan from roughly 20 minutes to about 1 minute.
 
