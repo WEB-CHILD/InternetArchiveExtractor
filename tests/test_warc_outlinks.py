@@ -2,6 +2,10 @@
 
 from io import BytesIO
 
+import gc
+import weakref
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 import requests
 from warcio.archiveiterator import ArchiveIterator
@@ -774,6 +778,80 @@ def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
     # An archive miss is not a request failure, and is not worth a line of its own.
     assert not (tmp_path / "site_outlinks_failed.txt").exists()
     assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
+
+
+def test_completed_responses_are_released_during_the_run(tmp_path, monkeypatch):
+    """Finished downloads must not stay resident -- a multi-million-link run cannot
+    hold every response body until the end."""
+    links = {f"http://a.com/{i}.html": "20000302202605" for i in range(60)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+
+    handed_out = []          # weakrefs to every response the session returned
+    alive_midway = []
+
+    class _WeakSession:
+        def get(self, url, **kwargs):
+            resp = _Resp(url=url, headers={"Content-Type": "text/html"},
+                         content=b"x" * 1000)
+            handed_out.append(weakref.ref(resp))
+            if len(handed_out) == 50:
+                # Everything from the first half of the run should already be
+                # collectable by now; only the in-flight window may still be alive.
+                gc.collect()
+                alive_midway.append(sum(1 for ref in handed_out[:20] if ref() is not None))
+            return resp
+
+        def mount(self, prefix, adapter):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, "Session", _WeakSession)
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
+
+    assert len(_read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))) == 60
+    assert alive_midway == [0]
+
+
+def test_in_flight_work_is_bounded_by_the_window(tmp_path, monkeypatch):
+    """Only a window of downloads is ever submitted, however many links there are."""
+    links = {f"http://a.com/{i}.html": "20000302202605" for i in range(200)}
+    monkeypatch.setattr(o, "collect_outlinks_from_warcs", lambda paths, **kwargs: links)
+
+    submitted = 0
+    max_outstanding = 0
+    real_submit = ThreadPoolExecutor.submit
+
+    def _counting_submit(self, fn, *args, **kwargs):
+        nonlocal submitted, max_outstanding
+        submitted += 1
+        max_outstanding = max(max_outstanding, submitted - completed_count[0])
+        return real_submit(self, fn, *args, **kwargs)
+
+    completed_count = [0]
+
+    class _CountingSession:
+        def get(self, url, **kwargs):
+            completed_count[0] += 1
+            return _Resp(url=url, headers={"Content-Type": "text/html"}, content=b"x")
+
+        def mount(self, prefix, adapter):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ThreadPoolExecutor, "submit", _counting_submit)
+    monkeypatch.setattr(requests, "Session", _CountingSession)
+
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=2)
+
+    # threads * 4 is the window; nothing beyond it is ever queued up front.
+    assert max_outstanding <= 2 * 4
+    assert submitted == 200
+    assert len(_read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))) == 200
 
 
 def test_replay_level_redirect_hop_is_not_archived():

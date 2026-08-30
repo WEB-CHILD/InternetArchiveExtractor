@@ -15,7 +15,9 @@ import time
 from io import BytesIO
 from datetime import datetime
 from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor, ProcessPoolExecutor, wait, FIRST_COMPLETED,
+)
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -504,74 +506,103 @@ def fetch_and_archive_outlinks(
     redirects = 0
     not_archived = 0
     started_at = time.monotonic()
+    # Work is dispatched through a bounded window rather than submitted all at once.
+    # A real run carries millions of links, and submitting them up front would build
+    # that many Future and work-item objects before the first download; worse, a list
+    # of every future keeps each completed one -- and the response body it holds --
+    # resident until the whole run ends. Only this many downloads are ever pending.
+    in_flight_limit = max(threads * 4, 1)
+    pending_work = iter(enumerate(outlinks.items(), start=1))
+
     try:
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            logger.info(f"Submitting {total} outgoing link(s) for download through {threads} thread(s)...")
-            futures = [
-                executor.submit(_download, item)
-                for item in enumerate(outlinks.items(), start=1)
-            ]
+            logger.info(
+                f"Submitting {total} outgoing link(s) for download through {threads} thread(s), "
+                f"{in_flight_limit} at a time..."
+            )
+            in_flight = set()
+
+            def _refill():
+                """Top the in-flight set back up to the window from the remaining work."""
+                while len(in_flight) < in_flight_limit:
+                    item = next(pending_work, None)
+                    if item is None:
+                        return
+                    in_flight.add(executor.submit(_download, item))
+
+            _refill()
             # Results are consumed (and written) here in a single thread, so the
             # non-thread-safe writer is only ever touched serially.
-            for future in as_completed(futures):
-                url, timestamp, response = future.result()
-                if response is None:
-                    failed += 1
-                    # The full Wayback request URL, so the line is directly re-fetchable
-                    # and still carries both the original URL and its capture timestamp.
-                    failures_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
-                elif not _is_archived_capture(response):
-                    # Wayback has no capture for this link. Writing its error page would
-                    # put present-day web.archive.org HTML into the WARC as if the
-                    # historical site had served it.
-                    # Nothing is recorded per link: on real link sets most links are
-                    # misses, so only the running tally is worth reporting.
-                    not_archived += 1
-                else:
-                    if record_redirects:
-                        for (hop_url, hop_status, hop_reason, hop_location,
-                             hop_content, hop_timestamp) in _redirect_hops(response):
-                            writer_state.write_resource(
-                                url=hop_url,
-                                status_code=hop_status,
-                                reason=hop_reason,
-                                content_type="text/html",
-                                content=hop_content,
-                                warc_date=_timestamp_to_warc_date(hop_timestamp or timestamp),
-                                location=hop_location,
-                            )
-                            redirects += 1
-                            logger.debug(f"Archived redirect {hop_status}: {hop_url} -> {hop_location}")
+            while in_flight:
+                done, still_pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                # Rebinding to the not-yet-finished set is what drops the finished
+                # futures; without it they would pin every response for the whole run.
+                in_flight = still_pending
+                for future in done:
+                    url, timestamp, response = future.result()
+                    if response is None:
+                        failed += 1
+                        # The full Wayback request URL, so the line is directly re-fetchable
+                        # and still carries both the original URL and its capture timestamp.
+                        failures_log.write(WAYBACK_RAW_URL.format(timestamp=timestamp, url=url))
+                    elif not _is_archived_capture(response):
+                        # Wayback has no capture for this link. Writing its error page would
+                        # put present-day web.archive.org HTML into the WARC as if the
+                        # historical site had served it.
+                        # Nothing is recorded per link: on real link sets most links are
+                        # misses, so only the running tally is worth reporting.
+                        not_archived += 1
+                    else:
+                        if record_redirects:
+                            for (hop_url, hop_status, hop_reason, hop_location,
+                                 hop_content, hop_timestamp) in _redirect_hops(response):
+                                writer_state.write_resource(
+                                    url=hop_url,
+                                    status_code=hop_status,
+                                    reason=hop_reason,
+                                    content_type="text/html",
+                                    content=hop_content,
+                                    warc_date=_timestamp_to_warc_date(hop_timestamp or timestamp),
+                                    location=hop_location,
+                                )
+                                redirects += 1
+                                logger.debug(f"Archived redirect {hop_status}: {hop_url} -> {hop_location}")
 
-                    capture_ts = _actual_capture_timestamp(response, timestamp)
-                    # Record the body under the URL it actually came from. Following a
-                    # real redirect means the content belongs to the target, not to the
-                    # URL originally requested.
-                    _, final_url = _split_wayback_url(response.url)
-                    writer_state.write_resource(
-                        url=final_url or url,
-                        status_code=response.status_code,
-                        reason=response.reason or "",
-                        content_type=response.headers.get("Content-Type", "application/octet-stream"),
-                        content=response.content,
-                        warc_date=_timestamp_to_warc_date(capture_ts),
-                    )
-                    success += 1
+                        capture_ts = _actual_capture_timestamp(response, timestamp)
+                        # Record the body under the URL it actually came from. Following a
+                        # real redirect means the content belongs to the target, not to the
+                        # URL originally requested.
+                        _, final_url = _split_wayback_url(response.url)
+                        writer_state.write_resource(
+                            url=final_url or url,
+                            status_code=response.status_code,
+                            reason=response.reason or "",
+                            content_type=response.headers.get("Content-Type", "application/octet-stream"),
+                            content=response.content,
+                            warc_date=_timestamp_to_warc_date(capture_ts),
+                        )
+                        success += 1
 
-                completed += 1
-                # Completed (not just successful) downloads drive the progress line, so
-                # a run with many failures still reports that it is moving.
-                if progress_every and (completed % progress_every == 0 or completed == total):
-                    elapsed = time.monotonic() - started_at
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    eta = (total - completed) / rate if rate > 0 else 0
-                    logger.info(
-                        f"Outlink progress for '{output_basename}': "
-                        f"{completed}/{total} ({100 * completed / total:.1f}%) - "
-                        f"{success} ok, {failed} failed, {not_archived} not archived - "
-                        f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, "
-                        f"ETA {_format_duration(eta)}"
-                    )
+                    completed += 1
+                    # Completed (not just successful) downloads drive the progress line, so
+                    # a run with many failures still reports that it is moving.
+                    if progress_every and (completed % progress_every == 0 or completed == total):
+                        elapsed = time.monotonic() - started_at
+                        rate = completed / elapsed if elapsed > 0 else 0
+                        eta = (total - completed) / rate if rate > 0 else 0
+                        logger.info(
+                            f"Outlink progress for '{output_basename}': "
+                            f"{completed}/{total} ({100 * completed / total:.1f}%) - "
+                            f"{success} ok, {failed} failed, {not_archived} not archived - "
+                            f"{rate:.1f}/s, elapsed {_format_duration(elapsed)}, "
+                            f"ETA {_format_duration(eta)}"
+                        )
+
+                # Releasing the last references to the finished futures (and so to
+                # the response bodies just written) before topping the window back
+                # up keeps peak memory at the window size rather than the run size.
+                done = future = response = None
+                _refill()
     finally:
         writer_state.close()
         session.close()
