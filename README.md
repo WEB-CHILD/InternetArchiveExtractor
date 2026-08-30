@@ -34,7 +34,10 @@ Usage pattern for the main runner (`src/main.py`):
 
 ```bash
 # Download mode
-python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean]
+python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks]
+
+# Download mode, outgoing links from existing WARCS only (no <input> needed)
+python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N]
 
 # Convert mode
 python src/main.py convert <input> --output OUTPUT [--warc-output FOLDER]
@@ -72,6 +75,8 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--warc-output` — Path to the folder where WARC files will be saved (default: `./output`)
 - `--workers` — Number of worker threads for parallel downloading (default: `5`)
 - `--clean` — If present, deletes intermediate CSV, DB, and CDX files after processing
+- `--no-outlinks` — If present, skips the step that downloads and archives the outgoing links found in the created WARC files
+- `--outlinks-only` — If present, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already on disk (see below)
 
 **Example with CUSTOM period**:
 
@@ -84,6 +89,30 @@ python src/main.py download resources/curated_urls.csv --period CUSTOM --start_t
 ```bash
 python src/main.py download resources/curated_urls.csv --snapshot-folder /data/snapshots --warc-output /data/warcs
 ```
+
+#### Outlinks-only run — archive outgoing links from WARC files already on disk
+
+**Description**: With `--outlinks-only`, nothing is downloaded from the Wayback Machine's CDX index and no source WARC files are created. The tool scans the `--warc-output` folder for the WARC files already there, and for each one downloads its outgoing links into a matching `<name>_outlinks-XXXX.warc.gz` file. Use it to (re-)run just the second step after a download that finished without its outlinks, or that was interrupted.
+
+WARC part files (`<name>-0001.warc.gz`, `<name>-0002.warc.gz`, …) are grouped back into a single source, and existing `<name>_outlinks-XXXX.warc.gz` files are skipped as sources so their links are not fetched again. Note that an existing outlinks WARC for a given name **is overwritten** by the new run.
+
+**`input` is not required** in this mode, and `--outlinks-only` cannot be combined with `--no-outlinks`.
+
+**Example**:
+
+```bash
+python src/main.py download --outlinks-only
+```
+
+**Example against a custom WARC folder with more threads**:
+
+```bash
+python src/main.py download --outlinks-only --warc-output /data/warcs --workers 10
+```
+
+**Relevant flags**:
+- `--warc-output` — Folder that is scanned for existing WARC files (default: `./output`)
+- `--workers` — Number of concurrent download threads used to fetch the outgoing links (default: `5`)
 
 #### Convert mode — combine CSVs and produce a WARC
 

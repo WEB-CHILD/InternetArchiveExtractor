@@ -326,7 +326,7 @@ def test_fetch_and_archive_outlinks_end_to_end(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(requests, "Session", lambda: _FakeSession([captured]))
 
-    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", delay=0)
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
 
     records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
     assert records[0][0] == "http://a.com/out.html"
@@ -345,7 +345,7 @@ def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch):
         lambda: _FakeSession([requests.RequestException("x"), requests.RequestException("y"),
                               requests.RequestException("z")]),
     )
-    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", delay=0, max_retries=2)
+    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1, max_retries=2)
     # An (empty) WARC part file is still created.
     records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
     assert records == []

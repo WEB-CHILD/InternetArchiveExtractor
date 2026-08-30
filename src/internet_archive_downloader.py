@@ -202,6 +202,75 @@ def create_outlinks_warc(warc_output: str, warcfile_name: str, threads: int = No
         threads=(threads if threads is not None else 5),
     )
 
+# Matches a WARC part file produced by the packaging step, e.g. "site_com-0001.warc.gz".
+_WARC_PART_RE = re.compile(r"^(?P<base>.+)-\d+\.warc\.gz$")
+
+
+def find_existing_warc_basenames(warc_output: str = "./output"):
+    """
+    Finds the base names of every source WARC file already present in the output folder.
+
+    Part files ("<base>-XXXX.warc.gz") are grouped back into their shared base name, and
+    WARC files that are themselves outlinks archives ("<base>_outlinks-XXXX.warc.gz") are
+    skipped so a re-run does not fetch the outgoing links of previously fetched outgoing links.
+
+    Args:
+        warc_output (str): Path to the WARC output folder.
+
+    Returns:
+        list[str]: Sorted, de-duplicated base names of the source WARC files found.
+    """
+    basenames = set()
+    for path in glob.glob(os.path.join(warc_output, "*.warc.gz")):
+        match = _WARC_PART_RE.match(os.path.basename(path))
+        if not match:
+            logger.debug(f"Ignoring WARC file with unexpected name: {path}")
+            continue
+
+        base = match.group("base")
+        if base.endswith("_outlinks"):
+            continue
+
+        basenames.add(base)
+
+    return sorted(basenames)
+
+
+def fetch_outlinks_for_existing_warcs(warc_output: str = "./output", threads: int = None):
+    """
+    Runs only the outgoing-link step against the WARC files already on disk.
+
+    No snapshots are downloaded and no source WARC files are created; the output folder is
+    scanned for existing WARC files and each one gets its outgoing links archived into a
+    matching "<base>_outlinks-XXXX.warc.gz" file. Any existing outlinks WARC for a base name
+    is overwritten.
+
+    Args:
+        warc_output (str): Path to the WARC output folder to scan.
+        threads (int, optional): Number of concurrent download threads. Defaults to 5.
+
+    Returns:
+        None
+    """
+    if not os.path.isdir(warc_output):
+        logger.error(f"WARC output folder '{warc_output}' does not exist. Nothing to do.")
+        return
+
+    basenames = find_existing_warc_basenames(warc_output)
+    if not basenames:
+        logger.warning(f"No source WARC files found in '{warc_output}'. Nothing to do.")
+        return
+
+    logger.info(
+        f"Outlinks-only run: found {len(basenames)} WARC file group(s) in '{warc_output}'."
+    )
+    for index, basename in enumerate(basenames, start=1):
+        logger.info(f"Processing WARC group {index}/{len(basenames)}: '{basename}'.")
+        try:
+            create_outlinks_warc(warc_output, basename, threads)
+        except Exception as e:
+            logger.error(f"Failed to archive outgoing links for '{basename}': {e}")
+
 def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """
     Cleans up temporary files and directories created during the download process.
