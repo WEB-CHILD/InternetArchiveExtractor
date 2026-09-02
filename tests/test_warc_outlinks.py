@@ -27,6 +27,46 @@ def test_extract_resolves_relative_links():
     links = o.extract_outgoing_links(html, "http://a.com/dir/page1.html")
     assert links == ["http://a.com/dir/page2.html"]
 
+def test_extract_resolves_every_relative_form():
+    """Same-dir, parent, root-relative, protocol-relative and query-only hrefs all resolve."""
+    html = (
+        b'<a href="./same.html">1</a>'
+        b'<a href="../up.html">2</a>'
+        b'<a href="/root.html">3</a>'
+        b'<a href="//cdn.example.com/lib.js">4</a>'
+        b'<a href="?q=1">5</a>'
+        b'<img src="../img/logo.png">'
+        b'<video poster="thumbs/p.jpg"></video>'
+    )
+    links = o.extract_outgoing_links(html, "http://a.com/dir/sub/page.html?old=1")
+    assert links == [
+        "http://a.com/dir/sub/same.html",
+        "http://a.com/dir/up.html",
+        "http://a.com/root.html",
+        "http://cdn.example.com/lib.js",
+        # A query-only href replaces the base's query but keeps its path.
+        "http://a.com/dir/sub/page.html?q=1",
+        "http://a.com/dir/img/logo.png",
+        "http://a.com/dir/sub/thumbs/p.jpg",
+    ]
+
+
+def test_extract_protocol_relative_link_inherits_base_scheme():
+    """A "//host/path" href takes its scheme from the page it was found on."""
+    html = b'<script src="//cdn.example.com/lib.js"></script>'
+    assert o.extract_outgoing_links(html, "https://a.com/dir/p.html") == [
+        "https://cdn.example.com/lib.js"
+    ]
+
+
+def test_extract_strips_whitespace_before_resolving():
+    """Whitespace padding around a relative href does not leak into the resolved URL."""
+    html = b'<a href="  next.html  ">x</a>'
+    assert o.extract_outgoing_links(html, "http://a.com/dir/p.html") == [
+        "http://a.com/dir/next.html"
+    ]
+
+
 
 def test_extract_collects_embedded_resources():
     """img, script, link, and iframe tags are all collected alongside anchor hrefs."""
