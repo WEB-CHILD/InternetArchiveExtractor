@@ -1,6 +1,6 @@
 certifi==2025.8.3
 charset-normalizer==3.4.3
-idna==3.10
+idna==3.15
 numpy==2.3.3
 pandas==2.3.3
 pysqlite3==0.6.0
@@ -13,5 +13,5 @@ selectolax==0.4.11
 six==1.17.0
 tqdm==4.67.1
 tzdata==2025.2
-urllib3==2.5.0
+urllib3==2.7.0
 warcio==1.7.5
