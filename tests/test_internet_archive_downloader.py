@@ -176,7 +176,7 @@ def test_create_outlinks_warc_invokes_fetch(tmp_path, monkeypatch):
     (tmp_path / "site-0002.warc.gz").write_bytes(b"")
     captured = {}
 
-    def fake_fetch(source_warcs, warc_output, warcfile_name):
+    def fake_fetch(source_warcs, warc_output, warcfile_name, **kwargs):
         captured["sources"] = source_warcs
         captured["name"] = warcfile_name
 
@@ -185,6 +185,88 @@ def test_create_outlinks_warc_invokes_fetch(tmp_path, monkeypatch):
 
     assert len(captured["sources"]) == 2
     assert captured["name"] == "site"
+
+
+# --------------------------------------------------------------------------- #
+# find_existing_warc_basenames
+# --------------------------------------------------------------------------- #
+def test_find_existing_warc_basenames_groups_part_files(tmp_path):
+    """Part files of the same source WARC are collapsed into a single base name."""
+    (tmp_path / "site_com-0001.warc.gz").write_bytes(b"")
+    (tmp_path / "site_com-0002.warc.gz").write_bytes(b"")
+    (tmp_path / "other_com-0001.warc.gz").write_bytes(b"")
+
+    assert d.find_existing_warc_basenames(str(tmp_path)) == ["other_com", "site_com"]
+
+
+def test_find_existing_warc_basenames_skips_outlinks_warcs(tmp_path):
+    """Previously generated outlinks WARCs are not treated as sources for a new run."""
+    (tmp_path / "site_com-0001.warc.gz").write_bytes(b"")
+    (tmp_path / "site_com_outlinks-0001.warc.gz").write_bytes(b"")
+
+    assert d.find_existing_warc_basenames(str(tmp_path)) == ["site_com"]
+
+
+def test_find_existing_warc_basenames_ignores_unexpected_names(tmp_path):
+    """WARC files without the '-XXXX' part suffix are ignored."""
+    (tmp_path / "loose.warc.gz").write_bytes(b"")
+    (tmp_path / "notes.txt").write_text("x")
+
+    assert d.find_existing_warc_basenames(str(tmp_path)) == []
+
+
+# --------------------------------------------------------------------------- #
+# fetch_outlinks_for_existing_warcs
+# --------------------------------------------------------------------------- #
+def test_fetch_outlinks_for_existing_warcs_processes_each_basename(tmp_path, monkeypatch):
+    """Every source WARC found on disk gets its outgoing links archived exactly once."""
+    (tmp_path / "a_com-0001.warc.gz").write_bytes(b"")
+    (tmp_path / "b_com-0001.warc.gz").write_bytes(b"")
+    (tmp_path / "b_com-0002.warc.gz").write_bytes(b"")
+    calls = []
+
+    monkeypatch.setattr(
+        d, "create_outlinks_warc",
+        lambda output, name, threads=None, scan_workers=None, excluded_tlds=(),
+               timeout=None, max_retries=None: calls.append((name, threads)),
+    )
+    d.fetch_outlinks_for_existing_warcs(str(tmp_path), threads=3)
+
+    assert calls == [("a_com", 3), ("b_com", 3)]
+
+
+def test_fetch_outlinks_for_existing_warcs_no_warcs_is_noop(tmp_path, monkeypatch):
+    """An output folder with no WARC files does nothing rather than raising."""
+    calls = []
+    monkeypatch.setattr(d, "create_outlinks_warc", lambda *a, **k: calls.append(a))
+    d.fetch_outlinks_for_existing_warcs(str(tmp_path))
+    assert calls == []
+
+
+def test_fetch_outlinks_for_existing_warcs_missing_dir_is_noop(tmp_path, monkeypatch):
+    """A non-existent output folder does nothing rather than raising."""
+    calls = []
+    monkeypatch.setattr(d, "create_outlinks_warc", lambda *a, **k: calls.append(a))
+    d.fetch_outlinks_for_existing_warcs(str(tmp_path / "nope"))
+    assert calls == []
+
+
+def test_fetch_outlinks_for_existing_warcs_continues_after_failure(tmp_path, monkeypatch):
+    """A failure on one WARC group does not abort the remaining groups."""
+    (tmp_path / "a_com-0001.warc.gz").write_bytes(b"")
+    (tmp_path / "b_com-0001.warc.gz").write_bytes(b"")
+    seen = []
+
+    def flaky(output, name, threads=None, scan_workers=None, excluded_tlds=(),
+              timeout=None, max_retries=None):
+        seen.append(name)
+        if name == "a_com":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(d, "create_outlinks_warc", flaky)
+    d.fetch_outlinks_for_existing_warcs(str(tmp_path))
+
+    assert seen == ["a_com", "b_com"]
 
 
 # --------------------------------------------------------------------------- #

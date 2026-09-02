@@ -22,6 +22,7 @@ dependencies = [
     "pytz",
     "pywaybackup",
     "requests",
+    "selectolax",
     "six",
     "tqdm",
     "tzdata",

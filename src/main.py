@@ -3,7 +3,10 @@ import argparse
 import logging
 from enum import Enum
 from waybackup_to_warc import combine_csv_files, process_csv_file, COMBINED_CSV_PATH
-from internet_archive_downloader import download_urls_from_csv
+from internet_archive_downloader import download_urls_from_csv, fetch_outlinks_for_existing_warcs
+from warc_outlinks import (
+    normalize_excluded_tlds, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES,
+)
 from constants import Period
 from logging_config import setup_logging, get_logger
 
@@ -12,7 +15,7 @@ from logging_config import setup_logging, get_logger
 parser = argparse.ArgumentParser(description="Internet Archive Extractor")
 
 parser.add_argument("mode", help="The mode to run the script in: 'download' or 'convert'")
-parser.add_argument("input", help="The input file or directory path.")
+parser.add_argument("input", nargs="?", help="The input file or directory path. Not required when --outlinks-only is set.")
 parser.add_argument("--output", help="The output file name for the generated WARC file. Only applicable for modes: 'convert' or 'full'.")
 parser.add_argument("--column_name", default="Internet_Archive_URL", help="The column name in the CSV file that contains the URLs for download. Default is 'Internet_Archive_URL'.")
 parser.add_argument("--period", default="FULL", help="The period around the archived date to download. Options are: 'DAY', 'WEEK', 'FULL' and 'CUSTOM'. Default is 'DAY'.")
@@ -24,6 +27,11 @@ parser.add_argument("--workers", type=int, default=5, help="Number of worker thr
 parser.add_argument("--snapshot-folder", default="./waybackup_snapshots", help="Path to the snapshot folder where pywaybackup stores downloaded files. Default is './waybackup_snapshots'.")
 parser.add_argument("--warc-output", default="./output", help="Path to the output folder where WARC files will be stored. Default is './output'.")
 parser.add_argument("--no-outlinks", action="store_true", help="If set, skips the step that downloads and archives the outgoing links found in the created WARC files.")
+parser.add_argument("--scan-workers", type=int, default=None, help="Number of processes used to scan WARC files for outgoing links. Scanning is CPU-bound, so this defaults to one per CPU core. Use 1 to scan in a single process.")
+parser.add_argument("--exclude-tld", nargs="+", action="extend", metavar="TLD", default=None, help="Top-level domains whose outgoing links are skipped entirely, e.g. --exclude-tld .dk .com. The leading dot is optional and matching is case-insensitive. Multi-label suffixes work too: '.co.uk' skips only that, '.uk' skips all of it. Can be repeated.")
+parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help=f"Per-request timeout in seconds when fetching outgoing links, applied to each hop of a redirect chain (default: {DEFAULT_TIMEOUT_SECONDS}). Archive.org's tail latency is long; a short timeout discards resources that do exist rather than skipping misses faster.")
+parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help=f"Extra attempts when the archive throttles (429) or returns a server error (default: {DEFAULT_MAX_RETRIES}). Backoff is exponential and honours Retry-After. A response the archive actually served, including a 404 for a URL it has no capture of, is never retried.")
+parser.add_argument("--outlinks-only", action="store_true", help="If set, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already present in the --warc-output folder. Only applicable for mode: 'download'.")
 parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
 parser.add_argument("--log-file", help="Path to a log file. If not specified, logs only to console.")
 
@@ -67,16 +75,55 @@ def choose_mode():
     snapshot_folder = args.snapshot_folder
     warc_output = args.warc_output
     fetch_outlinks = not args.no_outlinks
+    scan_workers = args.scan_workers
+    excluded_tlds = normalize_excluded_tlds(args.exclude_tld)
+    timeout = args.timeout
+    max_retries = args.max_retries
 
-    if download_period == Period.CUSTOM:
+    # Checking of arguments and exiting if any are incompatible.
+    outlinks_only = args.outlinks_only
+
+    if outlinks_only and args.mode.upper() != Mode.DOWNLOAD.name:
+        logger.error("--outlinks-only is only applicable for mode: 'download'.")
+        sys.exit(1)
+
+    if not outlinks_only and not args.input:
+        logger.error("An input file or directory path is required (omit it only with --outlinks-only).")
+        sys.exit(1)
+
+    if outlinks_only and args.no_outlinks:
+        logger.error("--outlinks-only and --no-outlinks cannot be used together.")
+        sys.exit(1)
+
+    if timeout < 1:
+        logger.error("--timeout must be at least 1 second.")
+        sys.exit(1)
+
+    if max_retries < 0:
+        logger.error("--max-retries cannot be negative.")
+        sys.exit(1)
+
+    if excluded_tlds and args.no_outlinks:
+        logger.error("--exclude-tld has no effect together with --no-outlinks.")
+        sys.exit(1)
+
+    if excluded_tlds:
+        logger.info(f"Skipping outgoing links to: {', '.join(excluded_tlds)}.")
+
+    if download_period == Period.CUSTOM and not outlinks_only:
         logger.info("CUSTOM period selected.")
         if not args.start_time or not args.end_time:
             logger.error("For CUSTOM period, both --start_time and --end_time must be provided.")
             sys.exit(1)
 
     if args.mode.upper() == Mode.DOWNLOAD.name:
+        if outlinks_only:
+            logger.info("Outlinks-only mode selected: using the WARC files already on disk.")
+            fetch_outlinks_for_existing_warcs(warc_output, workers, scan_workers,
+                                              excluded_tlds, timeout, max_retries)
+            return
         logger.info("Download mode selected.")
-        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers, snapshot_folder, warc_output, fetch_outlinks)
+        download_urls_from_csv(args.input, args.column_name, args.start_time, args.end_time, download_period, download_reset, dir_cleanup, workers, snapshot_folder, warc_output, fetch_outlinks, scan_workers, excluded_tlds, timeout, max_retries)
     elif args.mode.upper() == Mode.CONVERT.name:
         logger.info("Convert mode selected.")
         combine_csv_files(args.input, COMBINED_CSV_PATH)

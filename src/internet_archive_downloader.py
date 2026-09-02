@@ -9,7 +9,9 @@ from pywaybackup import PyWayBackup
 from pywaybackup.helper import sanitize_filename
 from wayback_date_object import WaybackDateObject
 from waybackup_to_warc import process_csv_file
-from warc_outlinks import fetch_and_archive_outlinks
+from warc_outlinks import (
+    fetch_and_archive_outlinks, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES,
+)
 from constants import Period
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine, inspect, text
@@ -46,7 +48,7 @@ def get_wayback_date_and_archived_url(wayback_url: str):
         return None, wayback_url
 
 
-def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots", warc_output: str = "./output", fetch_outlinks: bool = True):
+def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time: str = None, end_time: str = None, download_period: Period = None, download_reset: bool = False, dir_cleanup: bool = False, workers: int = None, snapshot_folder: str = "./waybackup_snapshots", warc_output: str = "./output", fetch_outlinks: bool = True, scan_workers: int = None, excluded_tlds=(), timeout: int = None, max_retries: int = None):
     """
     Reads a CSV file containing Internet Archive URLs (eg. https://web.archive.org/web/20251002062751/https://cas.au.dk/erc-webchild),
     retrieves their corresponding Wayback Machine archived URLs and dates, and downloads the archived content for each URL for a period of two weeks around the archived date.
@@ -135,7 +137,8 @@ def download_urls_from_csv(csv_file_path: str, url_column_name: str, start_time:
 
             # Fetch and archive outgoing links from the freshly created WARC files
             if fetch_outlinks:
-                create_outlinks_warc(warc_output, warcfile_name)
+                create_outlinks_warc(warc_output, warcfile_name, workers, scan_workers,
+                                     excluded_tlds, timeout, max_retries)
 
             drop_snapshot_indexes(snapshot_folder)
             copy_log_files(snapshot_folder)
@@ -172,7 +175,7 @@ def create_waybackup_filename(archived_url):
     sanitized = re.sub(r'([^\w\s])\1+', r'\1', sanitized)
     return f"waybackup_{sanitized}.csv"
 
-def create_outlinks_warc(warc_output: str, warcfile_name: str):
+def create_outlinks_warc(warc_output: str, warcfile_name: str, threads: int = None, scan_workers: int = None, excluded_tlds=(), timeout: int = None, max_retries: int = None):
     """
     Finds the WARC files just created for a source URL and archives their outgoing links.
 
@@ -184,6 +187,15 @@ def create_outlinks_warc(warc_output: str, warcfile_name: str):
     Args:
         warc_output (str): Path to the WARC output folder.
         warcfile_name (str): Base name of the source WARC file(s) (without the "-XXXX" suffix).
+        threads (int, optional): Number of concurrent download threads. Defaults to 5.
+        scan_workers (int, optional): Number of processes used to scan the source WARC
+            files for outgoing links. Defaults to one per CPU core.
+        excluded_tlds (tuple, optional): Host suffixes (e.g. (".dk", ".com")) whose
+            outgoing links are skipped entirely. Empty means archive every link.
+        timeout (int, optional): Per-request timeout in seconds. Defaults to
+            warc_outlinks.DEFAULT_TIMEOUT_SECONDS.
+        max_retries (int, optional): Extra attempts on throttling / server errors.
+            Defaults to warc_outlinks.DEFAULT_MAX_RETRIES.
 
     Returns:
         None
@@ -196,7 +208,96 @@ def create_outlinks_warc(warc_output: str, warcfile_name: str):
         return
 
     logger.info(f"Archiving outgoing links from {len(source_warcs)} WARC file(s) for '{warcfile_name}'.")
-    fetch_and_archive_outlinks(source_warcs, warc_output, warcfile_name)
+    fetch_and_archive_outlinks(
+        source_warcs, warc_output, warcfile_name,
+        threads=(threads if threads is not None else 5),
+        scan_workers=scan_workers,
+        excluded_tlds=excluded_tlds,
+        timeout=(timeout if timeout is not None else DEFAULT_TIMEOUT_SECONDS),
+        max_retries=(max_retries if max_retries is not None else DEFAULT_MAX_RETRIES),
+    )
+
+# Matches a WARC part file produced by the packaging step, e.g. "site_com-0001.warc.gz".
+_WARC_PART_RE = re.compile(r"^(?P<base>.+)-\d+\.warc\.gz$")
+
+
+def find_existing_warc_basenames(warc_output: str = "./output"):
+    """
+    Finds the base names of every source WARC file already present in the output folder.
+
+    Part files ("<base>-XXXX.warc.gz") are grouped back into their shared base name, and
+    WARC files that are themselves outlinks archives ("<base>_outlinks-XXXX.warc.gz") are
+    skipped so a re-run does not fetch the outgoing links of previously fetched outgoing links.
+
+    Args:
+        warc_output (str): Path to the WARC output folder.
+
+    Returns:
+        list[str]: Sorted, de-duplicated base names of the source WARC files found.
+    """
+    basenames = set()
+    for path in glob.glob(os.path.join(warc_output, "*.warc.gz")):
+        match = _WARC_PART_RE.match(os.path.basename(path))
+        if not match:
+            logger.debug(f"Ignoring WARC file with unexpected name: {path}")
+            continue
+
+        base = match.group("base")
+        if base.endswith("_outlinks"):
+            continue
+
+        basenames.add(base)
+
+    return sorted(basenames)
+
+
+def fetch_outlinks_for_existing_warcs(warc_output: str = "./output", threads: int = None, scan_workers: int = None, excluded_tlds=(), timeout: int = None, max_retries: int = None):
+    """
+    Runs only the outgoing-link step against the WARC files already on disk.
+
+    No snapshots are downloaded and no source WARC files are created; the output folder is
+    scanned for existing WARC files and each one gets its outgoing links archived into a
+    matching "<base>_outlinks-XXXX.warc.gz" file. Any existing outlinks WARC for a base name
+    is overwritten.
+
+    Args:
+        warc_output (str): Path to the WARC output folder to scan.
+        threads (int, optional): Number of concurrent download threads. Defaults to 5.
+        scan_workers (int, optional): Number of processes used to scan the source WARC
+            files for outgoing links. Defaults to one per CPU core.
+        excluded_tlds (tuple, optional): Host suffixes (e.g. (".dk", ".com")) whose
+            outgoing links are skipped entirely. Empty means archive every link.
+        timeout (int, optional): Per-request timeout in seconds. Defaults to
+            warc_outlinks.DEFAULT_TIMEOUT_SECONDS.
+        max_retries (int, optional): Extra attempts on throttling / server errors.
+            Defaults to warc_outlinks.DEFAULT_MAX_RETRIES.
+
+    Returns:
+        None
+    """
+    if not os.path.isdir(warc_output):
+        logger.error(f"WARC output folder '{warc_output}' does not exist. Nothing to do.")
+        return
+
+    basenames = find_existing_warc_basenames(warc_output)
+    if not basenames:
+        logger.warning(f"No source WARC files found in '{warc_output}'. Nothing to do.")
+        return
+
+    logger.info(
+        f"Outlinks-only run: found {len(basenames)} WARC file group(s) in '{warc_output}'."
+    )
+    for index, basename in enumerate(basenames, start=1):
+        logger.info(f"Processing WARC group {index}/{len(basenames)}: '{basename}'.")
+        try:
+            create_outlinks_warc(warc_output, basename, threads, scan_workers,
+                                 excluded_tlds, timeout, max_retries)
+        except Exception as e:
+            # exc_info so the traceback survives; without it the message alone
+            # rarely says where a failure came from.
+            logger.error(
+                f"Failed to archive outgoing links for '{basename}': {e}", exc_info=True
+            )
 
 def cleanup_temporary_files(snapshot_folder: str = "./waybackup_snapshots"):
     """

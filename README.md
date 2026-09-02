@@ -34,7 +34,10 @@ Usage pattern for the main runner (`src/main.py`):
 
 ```bash
 # Download mode
-python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean]
+python src/main.py download <input> [--column_name COLUMN] [--period PERIOD] [--reset] [--start_time START] [--end_time END] [--snapshot-folder FOLDER] [--warc-output FOLDER] [--workers N] [--clean] [--no-outlinks] [--exclude-tld TLD ...] [--timeout N] [--max-retries N]
+
+# Download mode, outgoing links from existing WARCS only (no <input> needed)
+python src/main.py download --outlinks-only [--warc-output FOLDER] [--workers N] [--exclude-tld TLD ...] [--timeout N] [--max-retries N]
 
 # Convert mode
 python src/main.py convert <input> --output OUTPUT [--warc-output FOLDER]
@@ -72,6 +75,12 @@ python src/main.py download resources/curated_urls.csv --column_name Internet_Ar
 - `--warc-output` — Path to the folder where WARC files will be saved (default: `./output`)
 - `--workers` — Number of worker threads for parallel downloading (default: `5`)
 - `--clean` — If present, deletes intermediate CSV, DB, and CDX files after processing
+- `--no-outlinks` — If present, skips the step that downloads and archives the outgoing links found in the created WARC files
+- `--outlinks-only` — If present, skips downloading and WARC packaging entirely and only archives the outgoing links of the WARC files already on disk (see below)
+- `--scan-workers` — Number of processes used to scan WARC files for outgoing links (default: one per CPU core). Scanning is CPU-bound HTML parsing, so this is parallelised across processes; use `1` to scan in a single process
+- `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `--exclude-tld .dk .com` (see below)
+- `--timeout` — Per-request timeout in seconds when fetching outgoing links (default: `20`)
+- `--max-retries` — Extra attempts when the archive throttles or errors (default: `3`)
 
 **Example with CUSTOM period**:
 
@@ -84,6 +93,73 @@ python src/main.py download resources/curated_urls.csv --period CUSTOM --start_t
 ```bash
 python src/main.py download resources/curated_urls.csv --snapshot-folder /data/snapshots --warc-output /data/warcs
 ```
+
+#### Outlinks-only run — archive outgoing links from WARC files already on disk
+
+**Description**: With `--outlinks-only`, nothing is downloaded from the Wayback Machine's CDX index and no source WARC files are created. The tool scans the `--warc-output` folder for the WARC files already there, and for each one downloads its outgoing links into a matching `<name>_outlinks-XXXX.warc.gz` file. Use it to (re-)run just the second step after a download that finished without its outlinks, or that was interrupted.
+
+Redirects are followed and preserved: each redirect the archived site actually served is written into the WARC as its own 3xx record carrying its `Location` header, and the final body is stored under the URL it actually came from rather than the URL originally requested. Wayback's own replay-level redirects — finding the nearest snapshot, or canonicalising a URL such as dropping a default `:80` — are playback features rather than historical content, and are not recorded; they are told apart by the same `Memento-Datetime` signal.
+
+Only responses the Wayback Machine served from a **real capture** are archived, which it signals with a `Memento-Datetime` header. This is independent of status code: an archived 404 or 403 is a real capture and is written to the WARC. A link Internet Archive has simply never captured answers with a present-day web.archive.org error page (~4.8 KB of `<title>Wayback Machine</title>` HTML); those are skipped so they cannot masquerade as archived websites. Misses are not listed individually, they are counted in the run summary. On real 1990s link sets the miss rate can exceed 70%, so this matters for both WARC size and archival accuracy.
+
+A redirect whose `Location` header carries raw 8-bit bytes apparently routine in 1990s national-language URLs, where Danish `å` is the single byte `0xe5`  makes `requests` raise a `UnicodeDecodeError` from inside its own redirect handling. That is not a `RequestException`, so left uncaught it aborts an entire run over one link. The session falls back to reading such a `Location` as latin-1 and follows the redirect; if the archive only holds the target under a different escaping, it comes back as an ordinary miss rather than a crash. *More generally, no single link can end a run: an unexpected error while handling one result is logged, counted as a failure, and the run continues.*
+
+##### Retries and timeouts
+
+A response the archive actually served is final and is never retried — including a 404 for a URL it has no capture of, which returns on the first attempt with no backoff. Only throttling (`429`), server errors (`5xx`) and transport failures are retried, with exponential backoff that honours a `Retry-After` header (capped at 60 s so one thread cannot stall).
+
+The defaults are deliberately generous: `--timeout 20` and `--max-retries 3`. Archive.org's tail latency is long. A sampled set of captures had a median response of 2.5s but a maximum of 25s, and its captures routinely redirect 3–6 times with each hop paying the timeout separately. A short timeout does **not** skip misses faster, since misses answer immediately; it only discards resources that do exist. On one real run a 5s timeout with a single retry threw away 175 links, of which a re-fetch found 11 out of 12 sampled to be genuine captures.
+
+##### Progress reporting
+
+The progress line is emitted on whichever comes first: every 1000 completed downloads, or 60 seconds since the last one. The count alone is not enough on a large run — with millions of links and a slow or unresponsive archive, every thread can sit in a timeout-and-retry cycle for minutes, so the next thousand completions may be hours away and a stalled run looks exactly like a slow one. The time-based heartbeat reports regardless, including before the first download finishes, and carries the number of requests still in flight:
+
+```
+Outlink progress for 'atelier_books': 0/2737803 (0.0%) - 0 ok, 0 failed, 0 not archived - 0.0/s, elapsed 1m 00s, ETA unknown, 20 in flight
+```
+
+A line whose counters have not moved between heartbeats is a stalled run; one whose `elapsed` grows while the counts climb slowly is merely slow. With no completions yet there is no rate to extrapolate from, so the ETA reads `unknown` rather than a misleading `0s`.
+
+Any request that could not be completed is recorded in `<name>_outlinks_failed.txt`, one Wayback request URL per line (e.g. `https://web.archive.org/web/20000302202605id_/http://example.com/page`). Each line is directly re-fetchable and still carries both the original URL and its capture timestamp. The file is written next to the outlinks WARC, is only created when there is at least one failure, and is overwritten on a re-run.
+
+WARC part files (`<name>-0001.warc.gz`, `<name>-0002.warc.gz`, …) are grouped back into a single source, and existing `<name>_outlinks-XXXX.warc.gz` files are skipped as sources so their links are not fetched again. Note that an existing outlinks WARC for a given name **is overwritten** by the new run.
+
+**`input` is not required** in this mode, and `--outlinks-only` cannot be combined with `--no-outlinks`.
+
+##### Excluding top-level domains
+
+`--exclude-tld` skips outgoing links whose host sits under one of the given top-level domains. It applies to both the full `download` run and `--outlinks-only`.
+
+```bash
+python src/main.py download --outlinks-only --exclude-tld .dk .com
+```
+
+The leading dot is optional (`.dk` and `dk` are the same) and matching is case-insensitive. Multi-label suffixes work as written: `.co.uk` excludes only that, while `.uk` excludes all of it. The flag can be repeated, and ports, userinfo and a trailing root dot do not defeat the match — `http://user@Example.DK.:80/x` is excluded by `.dk`. A suffix only matches on a label boundary, so `.dk` does not exclude `example.dk.com` or `notdk`.
+
+Excluded links are dropped during the scan, so they are never downloaded, never counted, and never cross into the download step. The saving can be large: on three real WARC files holding 141,034 outgoing links, `--exclude-tld .dk .com` left 6,846 — a 95% reduction — while adding about 1% to scan time.
+
+
+**Example**:
+
+```bash
+python src/main.py download --outlinks-only
+```
+
+**Example against a custom WARC folder with more threads**:
+
+```bash
+python src/main.py download --outlinks-only --warc-output /data/warcs --workers 10
+```
+
+**Relevant flags**:
+- `--warc-output` — Folder that is scanned for existing WARC files (default: `./output`)
+- `--workers` — Number of concurrent download threads used to fetch the outgoing links (default: `5`)
+- `--scan-workers` — Number of processes used to scan the WARC files (default: one per CPU core)
+- `--exclude-tld` — Top-level domains whose outgoing links are skipped entirely, e.g. `.dk .com`
+- `--timeout` — Per-request timeout in seconds (default: `20`)
+- `--max-retries` — Extra attempts when the archive throttles or errors (default: `3`)
+
+**A note on performance**: the scan phase is CPU-bound HTML parsing, not I/O — on a 9.7 GB set of 19 WARC files it is over 99% HTML parsing and under 1% disk reads. It is therefore parallelised across processes (threads would be serialised by the GIL) and uses `selectolax` rather than Python's `html.parser`. Together these took that 9.7 GB scan from roughly 20 minutes to about 1 minute.
 
 #### Convert mode — combine CSVs and produce a WARC
 
