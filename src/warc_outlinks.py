@@ -15,7 +15,7 @@ import time
 from io import BytesIO
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from concurrent.futures import (
     ThreadPoolExecutor, ProcessPoolExecutor, wait, FIRST_COMPLETED,
 )
@@ -82,6 +82,29 @@ _URL_TAG_SELECTOR = ",".join(_URL_ATTRS)
 _SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
 
 
+# Every printable ASCII character except space, so percent-encoding an href touches
+# only what has to be escaped -- the non-ASCII bytes -- and leaves URL syntax alone.
+_URL_SAFE_ASCII = "".join(map(chr, range(0x21, 0x7F)))
+
+
+def _percent_encode_source_bytes(href):
+    """
+    Percent-encode the bytes an href actually carried in a source document.
+
+    Documents are decoded as latin-1 (see extract_outgoing_links), which maps every
+    byte to a distinct character, so each character here recovers exactly the byte the
+    page was served with. Encoding them directly reproduces the original URL without 
+    having to know, or guess, the page's charset.
+    """
+    try:
+        raw = href.encode("latin-1")
+    except UnicodeEncodeError:
+        # A character reference outside latin-1 ("&#8364;") has no source byte to
+        # recover, since it was never one. UTF-8 is what a browser would send.
+        raw = href.encode("utf-8")
+    return quote(raw, safe=_URL_SAFE_ASCII)
+
+
 def _normalize_links(hrefs, base_url):
     """
     Resolve raw href values against ``base_url`` and filter them down to the
@@ -102,6 +125,11 @@ def _normalize_links(hrefs, base_url):
         match = _SCHEME_RE.match(href)
         if match and match.group(1).lower() in _SKIP_SCHEMES:
             continue
+
+        # Almost every href is plain ASCII, and isascii() is a flag check, so the
+        # recovery path below costs nothing on the pages that do not need it.
+        if not href.isascii():
+            href = _percent_encode_source_bytes(href)
 
         absolute = urljoin(base_url, href)
         fragment = absolute.find("#")
@@ -126,8 +154,14 @@ def extract_outgoing_links(html_bytes, base_url):
 
     Relative links are resolved against ``base_url`` (the page's original URL).
     Fragments are stripped and non-HTTP(S) schemes are discarded.
+
+    The document is decoded as latin-1 rather than utf-8. Only its ASCII structure
+    matters for parsing, and nothing here reads the page text. 
+    
+    Decoding as utf-8 with errors="replace" would turn every such byte into
+    U+FFFD, which is both irrecoverable and lossy enough to merge distinct URLs into one.
     """
-    text = html_bytes.decode("utf-8", errors="replace")
+    text = html_bytes.decode("latin-1")
     try:
         tree = LexborHTMLParser(text)
     except Exception as e:  # malformed markup should never abort the run

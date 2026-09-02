@@ -126,6 +126,71 @@ def test_extract_ignores_empty_href():
 
 
 # --------------------------------------------------------------------------- #
+# extract_outgoing_links: source-byte fidelity on non-ASCII hrefs
+# --------------------------------------------------------------------------- #
+def test_extract_preserves_latin1_href_bytes():
+    """A latin-1 page's href is percent-encoded from its original bytes, not from UTF-8."""
+    html = '<a href="b\xf8ger.html">x</a>'.encode("latin-1")
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/b%F8ger.html"]
+
+
+def test_extract_preserves_utf8_href_bytes():
+    """A UTF-8 page's href is percent-encoded from its UTF-8 bytes."""
+    html = '<a href="b\xf8ger.html">x</a>'.encode("utf-8")
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/b%C3%B8ger.html"]
+
+
+def test_extract_keeps_distinct_legacy_hrefs_distinct():
+    """Different high bytes stay different URLs instead of collapsing onto one U+FFFD key."""
+    html = ('<a href="b\xf8ger.html">1</a>'
+            '<a href="b\xe6ger.html">2</a>'
+            '<a href="b\xe5ger.html">3</a>').encode("latin-1")
+    assert o.extract_outgoing_links(html, "http://a.com/") == [
+        "http://a.com/b%F8ger.html",
+        "http://a.com/b%E6ger.html",
+        "http://a.com/b%E5ger.html",
+    ]
+
+
+def test_extract_preserves_multibyte_legacy_href_bytes():
+    """A multi-byte legacy encoding (euc-kr) round-trips byte for byte."""
+    href = "\ud55c\uae00.html".encode("euc-kr")
+    html = b'<a href="' + href + b'">x</a>'
+    expected = "http://a.com/" + "".join(f"%{b:02X}" for b in href[:-5]) + ".html"
+    assert o.extract_outgoing_links(html, "http://a.com/") == [expected]
+
+
+def test_extract_resolves_numeric_character_reference_to_its_byte():
+    """A character reference inside latin-1's range encodes to that single byte."""
+    html = b'<a href="b&#248;ger.html">x</a>'
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/b%F8ger.html"]
+
+
+def test_extract_falls_back_to_utf8_for_unrepresentable_character_reference():
+    """A character reference above latin-1 has no source byte, so UTF-8 is used."""
+    html = b'<a href="p&#8364;.html">x</a>'
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/p%E2%82%AC.html"]
+
+
+def test_extract_leaves_ascii_url_syntax_untouched():
+    """Encoding a non-ASCII href must not escape the query, fragment or path separators."""
+    html = '<a href="/a/b?x=1&y=2#f\xf8">x</a>'.encode("latin-1")
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/a/b?x=1&y=2"]
+
+
+def test_extract_encodes_non_ascii_host():
+    """A non-ASCII host is percent-encoded rather than replaced, keeping the URL usable."""
+    html = '<a href="http://\xf8.com/x">y</a>'.encode("latin-1")
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://%F8.com/x"]
+
+
+def test_extract_does_not_alter_already_percent_encoded_hrefs():
+    """An href that is already percent-encoded is pure ASCII and passes through as-is."""
+    html = b'<a href="b%F8ger.html">x</a>'
+    assert o.extract_outgoing_links(html, "http://a.com/") == ["http://a.com/b%F8ger.html"]
+
+
+# --------------------------------------------------------------------------- #
 # timestamp conversion helpers
 # --------------------------------------------------------------------------- #
 def test_warc_date_to_timestamp_roundtrip():
