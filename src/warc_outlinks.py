@@ -821,7 +821,7 @@ def fetch_and_archive_outlinks(
         f"  Not archived:       {not_archived}\n"
         f"  Total outgoing:     {len(outlinks)}\n"
         f"  Redirects archived: {redirects}\n"
-        f"  WARC part files:    {writer_state.file_number}"
+        f"  WARC part files:    {writer_state.files_written}"
         + (f"\n  Failed requests in: {failures_log.path}" if failures_log.count else "")
     )
 
@@ -833,31 +833,39 @@ class _OutlinksWarcWriter:
         self.output_dir = output_dir
         self.output_filename = output_filename
         self.max_size_bytes = max_size_bytes
-        self.file_number = 1
+        # Parts opened so far, and the number of the current part.
+        self.files_written = 0
         self.current_size = 0
+        self.warc_path = None
+        self.stream = None
+        self.writer = None
         os.makedirs(output_dir, exist_ok=True)
-        self._open_new_file()
 
     def _current_path(self):
         return os.path.join(
-            self.output_dir, f"{self.output_filename}-{self.file_number:04d}.warc.gz"
+            self.output_dir, f"{self.output_filename}-{self.files_written:04d}.warc.gz"
         )
 
     def _open_new_file(self):
+        self.files_written += 1
         self.warc_path = self._current_path()
         logger.info(f"Creating outlinks WARC file: {self.warc_path}")
         self.stream = open(self.warc_path, "wb")
         self.writer = WARCWriter(self.stream, gzip=True)
 
+    def _close_current_file(self):
+        self.stream.close()
+        logger.info(
+            f"Completed outlinks WARC file: {self.warc_path} "
+            f"(Size: {self.current_size / (1024 ** 3):.2f} GB)"
+        )
+
     def write_resource(self, url, status_code, reason, content_type, content, warc_date,
                        location=None):
-        if self.current_size >= self.max_size_bytes:
-            self.stream.close()
-            logger.info(
-                f"Completed outlinks WARC file: {self.warc_path} "
-                f"(Size: {self.current_size / (1024 ** 3):.2f} GB)"
-            )
-            self.file_number += 1
+        if self.stream is None:
+            self._open_new_file()
+        elif self.current_size >= self.max_size_bytes:
+            self._close_current_file()
             self.current_size = 0
             self._open_new_file()
 
@@ -882,8 +890,7 @@ class _OutlinksWarcWriter:
         self.current_size += len(content)
 
     def close(self):
-        self.stream.close()
-        logger.info(
-            f"Completed outlinks WARC file: {self.warc_path} "
-            f"(Size: {self.current_size / (1024 ** 3):.2f} GB)"
-        )
+        """Close the open part, if a resource was ever written."""
+        if self.stream is None:
+            return
+        self._close_current_file()

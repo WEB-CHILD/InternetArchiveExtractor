@@ -547,6 +547,46 @@ def test_outlinks_writer_splits_on_size(tmp_path):
     assert len(parts) >= 2
 
 
+def test_outlinks_writer_leaves_no_file_when_nothing_is_written(tmp_path):
+    """A writer that is opened and closed without a single resource creates no part file."""
+    writer = o._OutlinksWarcWriter(str(tmp_path), "site_outlinks", 1073741824)
+    writer.close()
+    assert list(tmp_path.glob("site_outlinks-*.warc.gz")) == []
+    assert writer.files_written == 0
+
+
+def test_outlinks_writer_numbers_the_lazily_opened_first_part(tmp_path):
+    """Deferring the open does not shift the numbering: the first part is still -0001."""
+    writer = o._OutlinksWarcWriter(str(tmp_path), "site_outlinks", 1073741824)
+    writer.write_resource(
+        url="http://a.com/x",
+        status_code=200,
+        reason="OK",
+        content_type="text/html",
+        content=b"<html></html>",
+        warc_date=None,
+    )
+    writer.close()
+    assert (tmp_path / "site_outlinks-0001.warc.gz").exists()
+    assert writer.files_written == 1
+
+
+def test_outlinks_writer_counts_every_part_it_split_into(tmp_path):
+    """files_written tracks the parts actually created, not just the last part's number."""
+    writer = o._OutlinksWarcWriter(str(tmp_path), "site_outlinks", max_size_bytes=10)
+    for i in range(3):
+        writer.write_resource(
+            url=f"http://a.com/{i}",
+            status_code=200,
+            reason="OK",
+            content_type="text/html",
+            content=b"x" * 20,
+            warc_date=None,
+        )
+    writer.close()
+    assert writer.files_written == len(list(tmp_path.glob("site_outlinks-*.warc.gz")))
+
+
 # --------------------------------------------------------------------------- #
 # fetch_and_archive_outlinks (end-to-end with mocked network)
 # --------------------------------------------------------------------------- #
@@ -580,8 +620,8 @@ def test_fetch_and_archive_outlinks_end_to_end(tmp_path, monkeypatch):
     assert records[0][2] == b"<html>linked</html>"
 
 
-def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch):
-    """Failed downloads are counted and omitted from the WARC; the part file is still created."""
+def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch, caplog):
+    """Failed downloads are counted, and a run that archives nothing leaves no WARC behind."""
     monkeypatch.setattr(
         o, "collect_outlinks_from_warcs",
         lambda paths, **kwargs: {"http://a.com/out.html": "20000302202605"},
@@ -592,10 +632,19 @@ def test_fetch_and_archive_outlinks_counts_failures(tmp_path, monkeypatch):
         lambda: _FakeSession([requests.RequestException("x"), requests.RequestException("y"),
                               requests.RequestException("z")]),
     )
-    o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1, max_retries=2)
-    # An (empty) WARC part file is still created.
-    records = _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz"))
-    assert records == []
+    with caplog.at_level("INFO", logger="warc_outlinks"):
+        o.fetch_and_archive_outlinks(
+            ["unused"], str(tmp_path), "site", threads=1, max_retries=2)
+
+    # No record was ever written, so no part file should exist -- an empty one is not
+    # even a valid gzip member, and the failure is already recorded in the failed list.
+    assert list(tmp_path.glob("site_outlinks-*.warc.gz")) == []
+    assert (tmp_path / "site_outlinks_failed.txt").exists()
+
+    summary = [r.message for r in caplog.records if "Outlinks WARC summary" in r.message][0]
+    assert "Links failed:       1" in summary
+    assert "WARC part files:    0" in summary
+    assert "Creating outlinks WARC file" not in caplog.text
 
 
 # --------------------------------------------------------------------------- #
@@ -1093,7 +1142,8 @@ def test_wayback_miss_is_not_written_to_warc(tmp_path, monkeypatch):
 
     o.fetch_and_archive_outlinks(["unused"], str(tmp_path), "site", threads=1)
 
-    assert _read_outlink_records(str(tmp_path / "site_outlinks-0001.warc.gz")) == []
+    # Nothing was archived, so no part file is created at all.
+    assert list(tmp_path.glob("site_outlinks-*.warc.gz")) == []
     # An archive miss is not a request failure, and is not worth a line of its own.
     assert not (tmp_path / "site_outlinks_failed.txt").exists()
     assert not (tmp_path / "site_outlinks_not_archived.txt").exists()
