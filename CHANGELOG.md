@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [1.0.0] - 2026-09-24
+
 ### Added
 - Outgoing-link archiving (`warc_outlinks.py`): after each primary WARC is created, outgoing `<a>` hyperlinks and embedded resources (images, scripts, stylesheets, frames, media, objects) are extracted from every archived HTML page, downloaded from the Wayback Machine at the capture date of the referencing page, and packaged into a separate `<name>_outlinks-XXXX.warc.gz` file
 - `--no-outlinks` flag to skip the outgoing-link archiving step
