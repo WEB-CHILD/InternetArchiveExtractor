@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Tool for extracting archived web sites from the Internet Archive saving as WARC files."
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Victor Harbo Johnston", email = "vijo@cas.au.dk" }]
+authors = [{ name = "Victor Harbo Johnston", email = "vijo@cas.au.dk" }, { name = "Jørn Thøgersen", email = "jorn@cas.au.dk"}]
 requires-python = ">=3.8"
 dependencies = [
     "certifi",
